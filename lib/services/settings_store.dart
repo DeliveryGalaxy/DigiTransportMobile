@@ -8,6 +8,7 @@ class SettingsStore {
   static const usernameKey = 'username';
   static const afmKey = 'afm';
   static const subscriptionKeyKey = 'subscription_key';
+  static const environmentKey = 'aade_environment';
 
   SharedPreferences? _prefs;
 
@@ -21,6 +22,7 @@ class SettingsStore {
       username: prefs.getString(usernameKey) ?? '',
       afm: prefs.getString(afmKey) ?? '',
       subscriptionKey: prefs.getString(subscriptionKeyKey) ?? '',
+      environment: AadeEnvironment.fromStorage(prefs.getString(environmentKey)),
     );
   }
 
@@ -29,5 +31,6 @@ class SettingsStore {
     await prefs.setString(usernameKey, settings.username);
     await prefs.setString(afmKey, settings.afm);
     await prefs.setString(subscriptionKeyKey, settings.subscriptionKey);
+    await prefs.setString(environmentKey, settings.environment.name);
   }
 }

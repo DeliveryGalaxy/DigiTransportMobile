@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/app_settings.dart';
+import '../services/aade_client.dart';
 import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
 
@@ -22,6 +23,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loading = true;
   bool _obscureKey = true;
   bool _saving = false;
+  bool _testing = false;
+  AadeEnvironment _environment = AadeEnvironment.development;
 
   @override
   void initState() {
@@ -38,18 +41,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _usernameController.text = settings.username;
     _afmController.text = settings.afm;
     _subscriptionController.text = settings.subscriptionKey;
-    setState(() => _loading = false);
+    setState(() {
+      _environment = settings.environment;
+      _loading = false;
+    });
   }
 
   Future<void> _save() async {
     setState(() => _saving = true);
-    await _store.save(
-      AppSettings(
-        username: _usernameController.text.trim(),
-        afm: _afmController.text.trim(),
-        subscriptionKey: _subscriptionController.text.trim(),
-      ),
-    );
+    await _store.save(_currentSettings());
     if (!mounted) {
       return;
     }
@@ -57,6 +57,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(const SnackBar(content: Text('Αποθηκεύτηκε')));
+  }
+
+  AppSettings _currentSettings() {
+    return AppSettings(
+      username: _usernameController.text.trim(),
+      afm: _afmController.text.trim(),
+      subscriptionKey: _subscriptionController.text.trim(),
+      environment: _environment,
+    );
+  }
+
+  Future<void> _testAade() async {
+    setState(() => _testing = true);
+    final result = await AadeClient(
+      settings: _currentSettings(),
+    ).testConnection();
+    if (!mounted) {
+      return;
+    }
+    setState(() => _testing = false);
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(result.ok ? 'Σύνδεση ΑΑΔΕ OK' : 'Αποτυχία σύνδεσης'),
+          content: SingleChildScrollView(
+            child: SelectableText(
+              [
+                result.message,
+                if (result.endpoint != null) '\n${result.endpoint}',
+                if (result.body != null && result.body!.isNotEmpty)
+                  '\n${result.body}',
+              ].join('\n'),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -125,10 +169,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.card,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: const Color(0xFFD5DEE2)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            'Dev',
+                            style: TextStyle(
+                              color: _environment.isProduction
+                                  ? AppColors.muted
+                                  : AppColors.navy,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const Spacer(),
+                          Switch(
+                            value: _environment.isProduction,
+                            onChanged: (useProd) {
+                              setState(() {
+                                _environment = useProd
+                                    ? AadeEnvironment.production
+                                    : AadeEnvironment.development;
+                              });
+                            },
+                          ),
+                          const Spacer(),
+                          Text(
+                            'Prod',
+                            style: TextStyle(
+                              color: _environment.isProduction
+                                  ? AppColors.navy
+                                  : AppColors.muted,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Text(
+                        _environment.baseUrl,
+                        style: const TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
                 const SizedBox(height: 28),
                 FilledButton(
-                  onPressed: _saving ? null : _save,
+                  onPressed: _saving || _testing ? null : _save,
                   child: Text(_saving ? 'Αποθήκευση...' : 'Αποθήκευση'),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton(
+                  onPressed: _saving || _testing ? null : _testAade,
+                  child: _testing
+                      ? const SizedBox(
+                          height: 22,
+                          width: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Έλεγχος σύνδεσης ΑΑΔΕ'),
                 ),
               ],
             ),

@@ -56,6 +56,22 @@ void main() {
     expect(find.text('123456789'), findsOneWidget);
   });
 
+  testWidgets('AADE test button reports missing credentials', (tester) async {
+    await tester.pumpWidget(const DigiTransportApp());
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.settings_rounded));
+    await tester.pumpAndSettle();
+
+    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(OutlinedButton));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Αποτυχία σύνδεσης'), findsOneWidget);
+    expect(find.textContaining('Username και Subscription Key'), findsOneWidget);
+  });
+
   test('settings store writes values locally', () async {
     final store = SettingsStore();
     await store.save(
@@ -70,5 +86,31 @@ void main() {
     expect(loaded.username, 'nick');
     expect(loaded.afm, '999999999');
     expect(loaded.subscriptionKey, 'abc');
+    expect(loaded.environment, AadeEnvironment.development);
+  });
+
+  testWidgets('settings persist AADE environment', (tester) async {
+    await tester.pumpWidget(const DigiTransportApp());
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.settings_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('https://mydataapidev.aade.gr'), findsOneWidget);
+
+    await tester.tap(find.byType(Switch));
+    await tester.pump();
+    expect(find.text('https://mydatapi.aade.gr/myDATA'), findsOneWidget);
+
+    await tester.tap(find.text('Αποθήκευση'));
+    await tester.pumpAndSettle();
+
+    await tester.pumpWidget(const DigiTransportApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.settings_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('https://mydatapi.aade.gr/myDATA'), findsOneWidget);
+    expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
   });
 }
