@@ -14,6 +14,7 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _index = 0;
+  int _homeRevision = 0;
 
   Future<void> _openQrModal() async {
     await Navigator.of(context, rootNavigator: true).push(
@@ -26,6 +27,13 @@ class _MainShellState extends State<MainShell> {
         ),
       ),
     );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _index = 0;
+      _homeRevision++;
+    });
   }
 
   @override
@@ -34,7 +42,10 @@ class _MainShellState extends State<MainShell> {
       extendBody: true,
       body: IndexedStack(
         index: _index,
-        children: const [HomeScreen(), SettingsScreen()],
+        children: [
+          HomeScreen(revision: _homeRevision),
+          const SettingsScreen(),
+        ],
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       floatingActionButton: SizedBox(

@@ -1,37 +1,128 @@
 import 'package:flutter/material.dart';
 
+import '../models/scan_record.dart';
+import '../services/aade_client.dart';
+import '../services/scan_history_store.dart';
+import '../services/scan_record_sync.dart';
+import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
+import 'delivery_flow_page.dart';
 import 'qr_scanner_page.dart';
+import 'scan_detail_sheet.dart';
 
 class QrActionModal extends StatefulWidget {
-  const QrActionModal({super.key, required this.onFinished});
+  const QrActionModal({
+    super.key,
+    required this.onFinished,
+    this.client,
+    this.store,
+    this.historyStore,
+    this.scanQr,
+  });
 
   final VoidCallback onFinished;
+  final AadeClient? client;
+  final SettingsStore? store;
+  final ScanHistoryStore? historyStore;
+  final Future<String?> Function(String title)? scanQr;
 
   @override
   State<QrActionModal> createState() => _QrActionModalState();
 }
 
 class _QrActionModalState extends State<QrActionModal> {
-  String? _scannedValue;
-  String? _actionTitle;
+  bool _lookingUp = false;
 
-  Future<void> _openScanner(String title) async {
-    final value = await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => QrScannerPage(title: title)),
-    );
-    if (!mounted || value == null) {
+  Future<void> _openScanner(QrFlowAction action) async {
+    final raw = widget.scanQr != null
+        ? await widget.scanQr!(action.title)
+        : await Navigator.of(context).push<String>(
+            MaterialPageRoute(
+              builder: (_) => QrScannerPage(title: action.title),
+            ),
+          );
+    if (!mounted || raw == null || raw.trim().isEmpty) {
       return;
     }
-    setState(() {
-      _actionTitle = title;
-      _scannedValue = value;
-    });
-  }
 
-  void _finish() {
+    final qrUrl = extractQrUrl(raw);
+    final client =
+        widget.client ?? await AadeClient.fromStore(store: widget.store);
+    final history = widget.historyStore ?? ScanHistoryStore();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() => _lookingUp = true);
+    final existing = await _findExistingRecord(
+      client: client,
+      history: history,
+      qrUrl: qrUrl,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() => _lookingUp = false);
+
+    if (existing != null) {
+      await showScanRecordSheet(
+        context: context,
+        record: existing,
+        historyStore: history,
+        client: client,
+      );
+      if (!mounted) {
+        return;
+      }
+      Navigator.of(context).pop();
+      widget.onFinished();
+      return;
+    }
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => DeliveryFlowPage(
+          action: action,
+          qrUrl: qrUrl,
+          client: client,
+          store: widget.store,
+          historyStore: history,
+        ),
+      ),
+    );
+    if (!mounted) {
+      return;
+    }
     Navigator.of(context).pop();
     widget.onFinished();
+  }
+
+  Future<ScanRecord?> _findExistingRecord({
+    required AadeClient client,
+    required ScanHistoryStore history,
+    required String qrUrl,
+  }) async {
+    final byUrl = await history.findByQrUrl(qrUrl);
+    if (!client.isConfigured) {
+      return byUrl;
+    }
+    try {
+      final result = await client.getDeliveryNoteStatus(qrUrl: qrUrl);
+      final note = client.parseStatusXml(result.body);
+      final byMark = await history.findByMark(note?.invoiceMark);
+      final found = byMark ?? byUrl;
+      if (found == null) {
+        return null;
+      }
+      if (note == null || !ScanRecordSync.isDifferent(found, note)) {
+        return found;
+      }
+      final updated = ScanRecordSync.mergeStatus(found, note);
+      await history.update(updated);
+      return updated;
+    } catch (_) {
+      return byUrl;
+    }
   }
 
   @override
@@ -41,49 +132,34 @@ class _QrActionModalState extends State<QrActionModal> {
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.close),
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: _lookingUp ? null : () => Navigator.of(context).pop(),
         ),
-        title: Text(_scannedValue == null ? 'QR' : 'Αποτέλεσμα'),
+        title: const Text('QR'),
       ),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-          child: _scannedValue == null
-              ? _ActionTiles(onSelect: _openScanner)
-              : _ScanResult(
-                  actionTitle: _actionTitle ?? '',
-                  value: _scannedValue!,
-                  onOk: _finish,
+          child: _lookingUp
+              ? const Center(child: CircularProgressIndicator())
+              : Column(
+                  children: [
+                    _ActionTile(
+                      title: QrFlowAction.startRoute.title,
+                      subtitle: 'Σάρωση QR για έναρξη',
+                      icon: Icons.route_outlined,
+                      onTap: () => _openScanner(QrFlowAction.startRoute),
+                    ),
+                    const SizedBox(height: 16),
+                    _ActionTile(
+                      title: QrFlowAction.receive.title,
+                      subtitle: 'Σάρωση QR παραλαβής',
+                      icon: Icons.inventory_2_outlined,
+                      onTap: () => _openScanner(QrFlowAction.receive),
+                    ),
+                  ],
                 ),
         ),
       ),
-    );
-  }
-}
-
-class _ActionTiles extends StatelessWidget {
-  const _ActionTiles({required this.onSelect});
-
-  final ValueChanged<String> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        _ActionTile(
-          title: 'Έναρξη Δρομολογίου',
-          subtitle: 'Σάρωση QR για έναρξη',
-          icon: Icons.route_outlined,
-          onTap: () => onSelect('Έναρξη Δρομολογίου'),
-        ),
-        const SizedBox(height: 16),
-        _ActionTile(
-          title: 'Παραλαβή',
-          subtitle: 'Σάρωση QR παραλαβής',
-          icon: Icons.inventory_2_outlined,
-          onTap: () => onSelect('Παραλαβή'),
-        ),
-      ],
     );
   }
 }
@@ -156,65 +232,6 @@ class _ActionTile extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _ScanResult extends StatelessWidget {
-  const _ScanResult({
-    required this.actionTitle,
-    required this.value,
-    required this.onOk,
-  });
-
-  final String actionTitle;
-  final String value;
-  final VoidCallback onOk;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Expanded(
-          child: Center(
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: AppColors.card,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: const Color(0xFFE2EAED)),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.qr_code_2, size: 48, color: AppColors.teal),
-                  const SizedBox(height: 16),
-                  Text(
-                    actionTitle,
-                    style: const TextStyle(
-                      color: AppColors.muted,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  SelectableText(
-                    value,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: AppColors.navy,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        FilledButton(onPressed: onOk, child: const Text('OK')),
-      ],
     );
   }
 }

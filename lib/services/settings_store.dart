@@ -9,6 +9,9 @@ class SettingsStore {
   static const afmKey = 'afm';
   static const subscriptionKeyKey = 'subscription_key';
   static const environmentKey = 'aade_environment';
+  static const lastVehicleNumberKey = 'last_vehicle_number';
+  static const lastTransportTypeKey = 'last_transport_type';
+  static const lastTrailerNumberKey = 'last_trailer_number';
 
   SharedPreferences? _prefs;
 
@@ -32,5 +35,31 @@ class SettingsStore {
     await prefs.setString(afmKey, settings.afm);
     await prefs.setString(subscriptionKeyKey, settings.subscriptionKey);
     await prefs.setString(environmentKey, settings.environment.name);
+  }
+
+  Future<String> loadLastVehicleNumber() async {
+    final prefs = await _ensurePrefs();
+    return prefs.getString(lastVehicleNumberKey) ?? '';
+  }
+
+  Future<int> loadLastTransportType() async {
+    final prefs = await _ensurePrefs();
+    return prefs.getInt(lastTransportTypeKey) ?? 2;
+  }
+
+  Future<String> loadLastTrailerNumber() async {
+    final prefs = await _ensurePrefs();
+    return prefs.getString(lastTrailerNumberKey) ?? '';
+  }
+
+  Future<void> saveLastVehicle({
+    required String vehicleNumber,
+    required int transportType,
+    String? trailerNumber,
+  }) async {
+    final prefs = await _ensurePrefs();
+    await prefs.setString(lastVehicleNumberKey, vehicleNumber);
+    await prefs.setInt(lastTransportTypeKey, transportType);
+    await prefs.setString(lastTrailerNumberKey, trailerNumber ?? '');
   }
 }

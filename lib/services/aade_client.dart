@@ -3,9 +3,13 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 
 import '../models/app_settings.dart';
+import '../models/delivery.dart';
+import 'aade_xml.dart';
 import 'settings_store.dart';
 
 export '../models/app_settings.dart' show AadeEnvironment;
+export '../models/delivery.dart';
+export 'aade_xml.dart' show extractQrUrl, extractVehicleNumberForMark;
 
 /// Official AADE method paths (no leading slash).
 abstract final class AadePaths {
@@ -15,6 +19,8 @@ abstract final class AadePaths {
   static const getDeliveryNoteStatus = 'GetDeliveryNoteStatus';
   static const generateGroupQRCode = 'GenerateGroupQRCode';
   static const requestGroupQRDetails = 'RequestGroupQRDetails';
+  static const requestDocs = 'RequestDocs';
+  static const requestTransmittedDocs = 'RequestTransmittedDocs';
 }
 
 /// Header names required by AADE myDATA (section 3.1.1).
@@ -110,11 +116,13 @@ class AadeClient {
   Uri rejectDeliveryNoteUri() => uriFor(AadePaths.rejectDeliveryNote);
 
   Uri getDeliveryNoteStatusUri({
-    required String mark,
+    String? mark,
+    String? qrUrl,
     String? issuerVatNumber,
   }) {
     return uriFor(AadePaths.getDeliveryNoteStatus, {
-      'mark': mark,
+      if (mark != null && mark.isNotEmpty) 'mark': mark,
+      if (qrUrl != null && qrUrl.isNotEmpty) 'qrUrl': qrUrl,
       if (issuerVatNumber != null && issuerVatNumber.isNotEmpty)
         'issuerVatNumber': issuerVatNumber,
     });
@@ -142,35 +150,178 @@ class AadeClient {
       mark: _probeMark,
       issuerVatNumber: entityVatNumber.isEmpty ? null : entityVatNumber,
     );
+    final response = await _get(endpoint);
+    if (response is _NetworkFailure) {
+      return AadeConnectionResult(
+        ok: false,
+        message: response.message,
+        endpoint: endpoint.toString(),
+      );
+    }
+    return _resultFromResponse(response as http.Response, endpoint);
+  }
+
+  Future<AadeSubmitResult> getDeliveryNoteStatus({
+    required String qrUrl,
+  }) async {
+    if (!isConfigured) {
+      return const AadeSubmitResult(
+        ok: false,
+        message: 'Συμπλήρωσε Username και Subscription Key στις ρυθμίσεις.',
+      );
+    }
+
+    final endpoint = getDeliveryNoteStatusUri(qrUrl: qrUrl);
+    final response = await _get(endpoint);
+    if (response is _NetworkFailure) {
+      return AadeSubmitResult(ok: false, message: response.message);
+    }
+    return _statusFromResponse(response as http.Response);
+  }
+
+  /// Loads the original invoice XML (issuer first, then recipient).
+  ///
+  /// `RequestTransmittedDocs` / `RequestDocs` return documents with MARK
+  /// greater than the given `mark`, so we query `invoiceMark - 1`.
+  Future<String?> fetchInvoiceXml({required String invoiceMark}) async {
+    if (!isConfigured || invoiceMark.trim().isEmpty) {
+      return null;
+    }
+    final parsed = int.tryParse(invoiceMark.trim());
+    final minMark = parsed == null || parsed <= 0 ? '0' : '${parsed - 1}';
+    for (final path in [
+      AadePaths.requestTransmittedDocs,
+      AadePaths.requestDocs,
+    ]) {
+      final endpoint = uriFor(path, {
+        'mark': minMark,
+        'maxMark': invoiceMark.trim(),
+      });
+      final response = await _get(endpoint);
+      if (response is! http.Response) {
+        continue;
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        continue;
+      }
+      final body = response.body.trim();
+      if (body.isEmpty) {
+        continue;
+      }
+      final looksLikeInvoice = RegExp(
+        '<(?:\\w+:)?invoiceHeader',
+        caseSensitive: false,
+      ).hasMatch(body);
+      if (looksLikeInvoice ||
+          extractVehicleNumberForMark(body, invoiceMark.trim()) != null) {
+        return body;
+      }
+    }
+    return null;
+  }
+
+  Future<AadeSubmitResult> registerTransfer({
+    required String qrUrl,
+    required TransportDetails details,
+  }) async {
+    final xml = buildRegisterTransferXml(
+      qrUrl: qrUrl,
+      vehicleNumber: details.vehicleNumber,
+      transportType: details.transportType.code,
+      carrierVatNumber: details.carrierVatNumber,
+      trailerNumber: details.trailerNumber,
+    );
+    return _postXml(
+      registerTransferUri(),
+      xml,
+      markTag: 'transferMark',
+      successMessage: 'Η διακίνηση καταχωρήθηκε.',
+    );
+  }
+
+  Future<AadeSubmitResult> confirmDeliveryOutcome({
+    required String qrUrl,
+    required DeliveryOutcome outcome,
+    bool? deliveredWithoutRecipient,
+    int? packagingType,
+    int? packagingQuantity,
+  }) async {
+    final xml = buildConfirmDeliveryOutcomeXml(
+      qrUrl: qrUrl,
+      outcome: outcome.apiValue,
+      deliveredWithoutRecipient: deliveredWithoutRecipient,
+      packagingType: packagingType,
+      packagingQuantity: packagingQuantity,
+    );
+    return _postXml(
+      confirmDeliveryOutcomeUri(),
+      xml,
+      markTag: 'deliveryOutcomeMark',
+      successMessage: 'Η παράδοση καταχωρήθηκε.',
+    );
+  }
+
+  Future<AadeSubmitResult> rejectDeliveryNote({
+    required String qrUrl,
+    String? reason,
+  }) async {
+    final xml = buildRejectDeliveryNoteXml(qrUrl: qrUrl, reason: reason);
+    return _postXml(
+      rejectDeliveryNoteUri(),
+      xml,
+      markTag: 'rejectMark',
+      successMessage: 'Η παραλαβή απορρίφθηκε.',
+    );
+  }
+
+  Future<AadeSubmitResult> _postXml(
+    Uri endpoint,
+    String xml, {
+    required String markTag,
+    required String successMessage,
+  }) async {
+    if (!isConfigured) {
+      return const AadeSubmitResult(
+        ok: false,
+        message: 'Συμπλήρωσε Username και Subscription Key στις ρυθμίσεις.',
+      );
+    }
+
+    final response = await _send(
+      (client) => client.post(endpoint, headers: headers, body: xml),
+    );
+    if (response is _NetworkFailure) {
+      return AadeSubmitResult(ok: false, message: response.message);
+    }
+    return _submitFromResponse(
+      response as http.Response,
+      markTag: markTag,
+      successMessage: successMessage,
+    );
+  }
+
+  Future<Object> _get(Uri endpoint) {
+    return _send(
+      (client) => client.get(
+        endpoint,
+        headers: {...authHeaders, 'Accept': 'application/xml'},
+      ),
+    );
+  }
+
+  Future<Object> _send(
+    Future<http.Response> Function(http.Client client) send,
+  ) async {
     final client = _httpClient ?? http.Client();
     final ownsClient = _httpClient == null;
-
     try {
-      final response = await client
-          .get(
-            endpoint,
-            headers: {...authHeaders, 'Accept': 'application/xml'},
-          )
-          .timeout(_timeout);
-      return _resultFromResponse(response, endpoint);
+      return await send(client).timeout(_timeout);
     } on TimeoutException {
-      return AadeConnectionResult(
-        ok: false,
-        message: 'Η ΑΑΔΕ δεν απάντησε εγκαίρως.',
-        endpoint: endpoint.toString(),
-      );
+      return const _NetworkFailure('Η ΑΑΔΕ δεν απάντησε εγκαίρως.');
     } on http.ClientException catch (error) {
-      return AadeConnectionResult(
-        ok: false,
-        message: 'Σφάλμα δικτύου: ${error.message}',
-        endpoint: endpoint.toString(),
-      );
+      return _NetworkFailure('Σφάλμα δικτύου: ${error.message}');
     } catch (error) {
-      return AadeConnectionResult(
-        ok: false,
-        message: 'Σφάλμα δικτύου: $error',
-        endpoint: endpoint.toString(),
-      );
+      return _NetworkFailure('Σφάλμα δικτύου: $error');
     } finally {
       if (ownsClient) {
         client.close();
@@ -178,10 +329,118 @@ class AadeClient {
     }
   }
 
-  AadeConnectionResult _resultFromResponse(http.Response response, Uri endpoint) {
+  AadeSubmitResult _statusFromResponse(http.Response response) {
     final body = response.body.trim();
-    final xmlMessage = _xmlTag(body, 'message');
-    final xmlCode = _xmlTag(body, 'code') ?? _xmlTag(body, 'statusCode');
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      return AadeSubmitResult(
+        ok: false,
+        message:
+            xmlTag(body, 'message') ??
+            'Η ΑΑΔΕ απέρριψε τα credentials (HTTP ${response.statusCode}).',
+        statusCode: response.statusCode,
+        body: body,
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return AadeSubmitResult(
+        ok: false,
+        message:
+            xmlErrorMessage(body) ?? 'Σφάλμα ΑΑΔΕ (HTTP ${response.statusCode}).',
+        statusCode: response.statusCode,
+        body: body,
+      );
+    }
+
+    final statusValue = xmlTag(body, 'status');
+    if (statusValue != null && statusValue.isNotEmpty) {
+      return AadeSubmitResult(
+        ok: true,
+        message: DeliveryStatus.parse(statusValue).label,
+        statusCode: response.statusCode,
+        mark: xmlTag(body, 'invoiceMark'),
+        body: body,
+      );
+    }
+
+    return AadeSubmitResult(
+      ok: false,
+      message: xmlErrorMessage(body) ?? 'Δεν βρέθηκε κατάσταση δελτίου.',
+      statusCode: response.statusCode,
+      body: body,
+    );
+  }
+
+  AadeSubmitResult _submitFromResponse(
+    http.Response response, {
+    required String markTag,
+    required String successMessage,
+  }) {
+    final body = response.body.trim();
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      return AadeSubmitResult(
+        ok: false,
+        message:
+            xmlTag(body, 'message') ??
+            'Η ΑΑΔΕ απέρριψε τα credentials (HTTP ${response.statusCode}).',
+        statusCode: response.statusCode,
+        body: body,
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return AadeSubmitResult(
+        ok: false,
+        message:
+            xmlErrorMessage(body) ?? 'Σφάλμα ΑΑΔΕ (HTTP ${response.statusCode}).',
+        statusCode: response.statusCode,
+        body: body,
+      );
+    }
+
+    if (xmlIsSuccess(body)) {
+      return AadeSubmitResult(
+        ok: true,
+        message: successMessage,
+        statusCode: response.statusCode,
+        mark: xmlTag(body, markTag),
+        body: body,
+      );
+    }
+
+    return AadeSubmitResult(
+      ok: false,
+      message: xmlErrorMessage(body) ?? 'Η ΑΑΔΕ απέρριψε την υποβολή.',
+      statusCode: response.statusCode,
+      body: body,
+    );
+  }
+
+  DeliveryNoteStatus? parseStatusXml(String? xml) {
+    if (xml == null || xml.trim().isEmpty) {
+      return null;
+    }
+    final statusValue = xmlTag(xml, 'status');
+    if (statusValue == null || statusValue.isEmpty) {
+      return null;
+    }
+    final typeCode = lastTransportTypeCode(xml);
+    return DeliveryNoteStatus(
+      status: DeliveryStatus.parse(statusValue),
+      invoiceMark: xmlTag(xml, 'invoiceMark'),
+      dispatchTimestamp: xmlTag(xml, 'dispatchTimestamp'),
+      vehicleNumber: lastVehicleNumber(xml),
+      transportType: typeCode == null ? null : TransportType.fromCode(typeCode),
+      trailerNumber: lastTrailerNumber(xml),
+      rawXml: xml,
+    );
+  }
+
+  AadeConnectionResult _resultFromResponse(
+    http.Response response,
+    Uri endpoint,
+  ) {
+    final body = response.body.trim();
+    final xmlMessage = xmlTag(body, 'message');
+    final xmlCode = xmlTag(body, 'code') ?? xmlTag(body, 'statusCode');
 
     if (response.statusCode == 401 || response.statusCode == 403) {
       return AadeConnectionResult(
@@ -210,14 +469,6 @@ class AadeClient {
     );
   }
 
-  static String? _xmlTag(String body, String tag) {
-    final match = RegExp(
-      '<$tag[^>]*>([^<]*)</$tag>',
-      caseSensitive: false,
-    ).firstMatch(body);
-    return match?.group(1)?.trim();
-  }
-
   static String? _truncate(String body) {
     if (body.isEmpty) {
       return null;
@@ -227,4 +478,10 @@ class AadeClient {
     }
     return '${body.substring(0, 800)}…';
   }
+}
+
+class _NetworkFailure {
+  const _NetworkFailure(this.message);
+
+  final String message;
 }
