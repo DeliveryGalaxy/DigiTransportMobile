@@ -1,15 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../models/app_settings.dart';
-import '../services/aade_client.dart';
+import '../services/digi_api.dart';
 import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, this.store});
+  const SettingsScreen({super.key, this.store, this.api});
 
   final SettingsStore? store;
+  final DigiApi? api;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -17,14 +17,14 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late final SettingsStore _store;
-  final _usernameController = TextEditingController();
-  final _afmController = TextEditingController();
-  final _subscriptionController = TextEditingController();
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
   bool _loading = true;
-  bool _obscureKey = true;
   bool _saving = false;
   bool _testing = false;
-  AadeEnvironment _environment = AadeEnvironment.development;
+  ApiEnvironment _environment = ApiEnvironment.development;
+  String _token = '';
+  String _companyName = '';
 
   @override
   void initState() {
@@ -38,18 +38,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) {
       return;
     }
-    _usernameController.text = settings.username;
-    _afmController.text = settings.afm;
-    _subscriptionController.text = settings.subscriptionKey;
+    _firstNameController.text = settings.firstName;
+    _lastNameController.text = settings.lastName;
     setState(() {
-      _environment = settings.environment;
+      _environment = settings.apiEnvironment;
+      _token = settings.token;
+      _companyName = settings.companyName;
       _loading = false;
     });
   }
 
   Future<void> _save() async {
+    final firstName = _firstNameController.text.trim();
+    final lastName = _lastNameController.text.trim();
+    if (firstName.isEmpty || lastName.isEmpty) {
+      _showMessage('Στοιχεία', 'Συμπλήρωσε όνομα και επώνυμο.');
+      return;
+    }
+    final previous = await _store.load();
     setState(() => _saving = true);
-    await _store.save(_currentSettings());
+    await _store.save(
+      previous.copyWith(
+        firstName: firstName,
+        lastName: lastName,
+        apiEnvironment: _environment,
+      ),
+    );
     if (!mounted) {
       return;
     }
@@ -59,39 +73,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ..showSnackBar(const SnackBar(content: Text('Αποθηκεύτηκε')));
   }
 
-  AppSettings _currentSettings() {
-    return AppSettings(
-      username: _usernameController.text.trim(),
-      afm: _afmController.text.trim(),
-      subscriptionKey: _subscriptionController.text.trim(),
-      environment: _environment,
-    );
-  }
-
   Future<void> _testAade() async {
-    setState(() => _testing = true);
-    final result = await AadeClient(
-      settings: _currentSettings(),
-    ).testConnection();
-    if (!mounted) {
+    if (_token.isEmpty) {
+      _showMessage('Αποτυχία σύνδεσης', 'Ολοκλήρωσε πρώτα την είσοδο.');
       return;
     }
-    setState(() => _testing = false);
-    await showDialog<void>(
+    setState(() => _testing = true);
+    try {
+      final api = widget.api ??
+          DigiApi(baseUrl: _environment.baseUrl, token: _token);
+      final message = await api.testAade();
+      if (!mounted) {
+        return;
+      }
+      setState(() => _testing = false);
+      _showMessage('Σύνδεση ΑΑΔΕ OK', message);
+    } on DigiApiException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _testing = false);
+      _showMessage('Αποτυχία σύνδεσης', error.message);
+    }
+  }
+
+  Future<void> _showMessage(String title, String message) {
+    return showDialog<void>(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text(result.ok ? 'Σύνδεση ΑΑΔΕ OK' : 'Αποτυχία σύνδεσης'),
-          content: SingleChildScrollView(
-            child: SelectableText(
-              [
-                result.message,
-                if (result.endpoint != null) '\n${result.endpoint}',
-                if (result.body != null && result.body!.isNotEmpty)
-                  '\n${result.body}',
-              ].join('\n'),
-            ),
-          ),
+          title: Text(title),
+          content: Text(message),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
@@ -105,9 +117,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
-    _usernameController.dispose();
-    _afmController.dispose();
-    _subscriptionController.dispose();
+    _firstNameController.dispose();
+    _lastNameController.dispose();
     super.dispose();
   }
 
@@ -128,46 +139,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Τα στοιχεία αποθηκεύονται στη συσκευή.',
-                  style: TextStyle(color: AppColors.muted, fontSize: 14),
+                Text(
+                  _companyName.isEmpty ? 'Εταιρεία' : 'Εταιρεία: $_companyName',
+                  style: const TextStyle(color: AppColors.muted, fontSize: 14),
                 ),
                 const SizedBox(height: 28),
                 TextField(
-                  controller: _usernameController,
+                  controller: _firstNameController,
                   textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(labelText: 'Username'),
+                  decoration: const InputDecoration(labelText: 'Όνομα'),
                 ),
                 const SizedBox(height: 16),
                 TextField(
-                  controller: _afmController,
-                  keyboardType: TextInputType.number,
-                  textInputAction: TextInputAction.next,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(9),
-                  ],
-                  decoration: const InputDecoration(labelText: 'ΑΦΜ'),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _subscriptionController,
-                  obscureText: _obscureKey,
+                  controller: _lastNameController,
                   textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => _save(),
-                  decoration: InputDecoration(
-                    labelText: 'Subscription Key',
-                    suffixIcon: IconButton(
-                      onPressed: () {
-                        setState(() => _obscureKey = !_obscureKey);
-                      },
-                      icon: Icon(
-                        _obscureKey
-                            ? Icons.visibility_outlined
-                            : Icons.visibility_off_outlined,
-                      ),
-                    ),
-                  ),
+                  decoration: const InputDecoration(labelText: 'Επώνυμο'),
                 ),
                 const SizedBox(height: 20),
                 Container(
@@ -200,8 +186,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             onChanged: (useProd) {
                               setState(() {
                                 _environment = useProd
-                                    ? AadeEnvironment.production
-                                    : AadeEnvironment.development;
+                                    ? ApiEnvironment.production
+                                    : ApiEnvironment.development;
                               });
                             },
                           ),
@@ -232,17 +218,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onPressed: _saving || _testing ? null : _save,
                   child: Text(_saving ? 'Αποθήκευση...' : 'Αποθήκευση'),
                 ),
-                const SizedBox(height: 12),
-                OutlinedButton(
-                  onPressed: _saving || _testing ? null : _testAade,
-                  child: _testing
-                      ? const SizedBox(
-                          height: 22,
-                          width: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Έλεγχος σύνδεσης ΑΑΔΕ'),
-                ),
+                if (_token.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: _saving || _testing ? null : _testAade,
+                    child: const Text('Έλεγχος σύνδεσης ΑΑΔΕ'),
+                  ),
+                ],
               ],
             ),
     );

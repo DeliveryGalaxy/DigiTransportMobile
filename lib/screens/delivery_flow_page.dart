@@ -1,29 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/delivery.dart';
 import '../models/scan_record.dart';
-import '../services/aade_client.dart';
-import '../services/aade_xml.dart';
 import '../services/delivery_flow.dart';
-import '../services/scan_history_store.dart';
+import '../services/digi_api.dart';
 import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
 
 class DeliveryFlowPage extends StatefulWidget {
   const DeliveryFlowPage({
     super.key,
-    required this.action,
-    required this.qrUrl,
-    required this.client,
+    required this.api,
+    required this.record,
     this.store,
-    this.historyStore,
+    this.focusAction,
   });
 
-  final QrFlowAction action;
-  final String qrUrl;
-  final AadeClient client;
+  final DigiApi api;
+  final ScanRecord record;
   final SettingsStore? store;
-  final ScanHistoryStore? historyStore;
+  final String? focusAction;
 
   @override
   State<DeliveryFlowPage> createState() => _DeliveryFlowPageState();
@@ -31,7 +28,6 @@ class DeliveryFlowPage extends StatefulWidget {
 
 class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
   late final SettingsStore _store;
-  late final ScanHistoryStore _history;
   final _vehicleController = TextEditingController();
   final _trailerController = TextEditingController();
   final _rejectReasonController = TextEditingController();
@@ -40,33 +36,39 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
   bool _loading = true;
   bool _submitting = false;
   String? _error;
-  DeliveryNoteStatus? _note;
   DeliveryFlowPlan? _plan;
   TransportType _transportType = TransportType.privateTruck;
   DeliveryOutcome _outcome = DeliveryOutcome.full;
-  AadeSubmitResult? _submitResult;
-  ScanRecord? _record;
+  String? _submitMessage;
+  bool _submitOk = false;
+  late ScanRecord _record;
   bool _vehicleFromDocument = false;
 
   @override
   void initState() {
     super.initState();
     _store = widget.store ?? SettingsStore();
-    _history = widget.historyStore ?? ScanHistoryStore();
+    _record = widget.record;
     _bootstrap();
   }
 
+  QrFlowAction get _action => _record.action;
+
   Future<void> _bootstrap() async {
-    _vehicleController.text = await _store.loadLastVehicleNumber();
-    _trailerController.text = await _store.loadLastTrailerNumber();
-    _transportType = TransportType.fromCode(await _store.loadLastTransportType());
-    _record = ScanRecord(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
-      qrUrl: widget.qrUrl,
-      action: widget.action,
-      scannedAt: DateTime.now(),
-    );
-    await _history.add(_record!);
+    _vehicleController.text = _record.vehicleNumber?.trim().isNotEmpty == true
+        ? _record.vehicleNumber!.trim()
+        : await _store.loadLastVehicleNumber();
+    _trailerController.text = _record.trailerNumber?.trim().isNotEmpty == true
+        ? _record.trailerNumber!.trim()
+        : await _store.loadLastTrailerNumber();
+    _transportType = _record.transportType ??
+        TransportType.fromCode(await _store.loadLastTransportType());
+    _vehicleFromDocument = _record.vehicleFromDocument;
+    if (widget.focusAction == 'outcomePartial') {
+      _outcome = DeliveryOutcome.partial;
+    } else if (widget.focusAction == 'outcomeNone') {
+      _outcome = DeliveryOutcome.none;
+    }
     await _loadStatus();
   }
 
@@ -74,28 +76,25 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
     setState(() {
       _loading = true;
       _error = null;
-      _submitResult = null;
+      _submitMessage = null;
+      _submitOk = false;
     });
 
-    if (!widget.client.isConfigured) {
+    try {
+      final refreshed = await widget.api.refreshScan(_record.id);
+      if (!mounted) return;
+      _applyRecord(refreshed);
       setState(() {
         _loading = false;
-        _error = 'Συμπλήρωσε Username και Subscription Key στις ρυθμίσεις.';
+        _record = refreshed;
+        _plan = DeliveryFlowPlan.forAction(
+          action: refreshed.action,
+          status: refreshed.status,
+        );
       });
-      await _persistRecord(
-        message: 'Συμπλήρωσε Username και Subscription Key στις ρυθμίσεις.',
-      );
-      return;
-    }
-
-    final result = await widget.client.getDeliveryNoteStatus(qrUrl: widget.qrUrl);
-    if (!mounted) {
-      return;
-    }
-
-    final note = widget.client.parseStatusXml(result.body);
-    if (!result.ok || note == null) {
-      final fallback = widget.action == QrFlowAction.startRoute
+    } on DigiApiException catch (error) {
+      if (!mounted) return;
+      final fallback = _action == QrFlowAction.startRoute
           ? const DeliveryFlowPlan(
               canAdvance: true,
               advanceLabel: 'Έναρξη διακίνησης',
@@ -110,65 +109,28 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
             );
       setState(() {
         _loading = false;
-        _error = result.message;
-        _note = note;
-        _plan = fallback;
+        _error = error.message;
+        _plan = _record.status == DeliveryStatus.unknown
+            ? fallback
+            : DeliveryFlowPlan.forAction(
+                action: _record.action,
+                status: _record.status,
+              );
       });
-      await _persistRecord(message: result.message);
-      return;
     }
-
-    setState(() {
-      _loading = false;
-      _note = note;
-      _plan = DeliveryFlowPlan.forAction(
-        action: widget.action,
-        status: note.status,
-      );
-    });
-    await _applyVehicleFromDocument(note);
-    if (!mounted) {
-      return;
-    }
-    await _persistRecord(
-      vehicleNumber: _vehicleController.text.trim(),
-      transportType: _transportType,
-    );
   }
 
-  Future<void> _applyVehicleFromDocument(DeliveryNoteStatus note) async {
-    var plate = note.vehicleNumber;
-    var fromDocument = plate != null && plate.isNotEmpty;
-    if (note.invoiceMark != null && note.invoiceMark!.isNotEmpty) {
-      final invoiceXml = await widget.client.fetchInvoiceXml(
-        invoiceMark: note.invoiceMark!,
-      );
-      if (invoiceXml != null) {
-        final fromInvoice = extractVehicleNumberForMark(
-          invoiceXml,
-          note.invoiceMark!,
-        );
-        if (fromInvoice != null && fromInvoice.isNotEmpty) {
-          plate = fromInvoice;
-          fromDocument = true;
-        }
-      }
+  void _applyRecord(ScanRecord record) {
+    _vehicleFromDocument = record.vehicleFromDocument;
+    if (record.vehicleNumber != null && record.vehicleNumber!.isNotEmpty) {
+      _vehicleController.text = record.vehicleNumber!;
     }
-    if (!mounted) {
-      return;
+    if (record.transportType != null) {
+      _transportType = record.transportType!;
     }
-    setState(() {
-      _vehicleFromDocument = fromDocument;
-      if (plate != null && plate.isNotEmpty) {
-        _vehicleController.text = plate;
-      }
-      if (note.transportType != null) {
-        _transportType = note.transportType!;
-      }
-      if (note.trailerNumber != null && note.trailerNumber!.isNotEmpty) {
-        _trailerController.text = note.trailerNumber!;
-      }
-    });
+    if (record.trailerNumber != null && record.trailerNumber!.isNotEmpty) {
+      _trailerController.text = record.trailerNumber!;
+    }
   }
 
   Future<void> _submitAdvance() async {
@@ -176,7 +138,7 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
     if (plan == null || !plan.canAdvance || _submitting) {
       return;
     }
-    if (widget.action == QrFlowAction.startRoute) {
+    if (_action == QrFlowAction.startRoute || widget.focusAction == 'registerTransfer') {
       await _submitRegisterTransfer();
       return;
     }
@@ -189,35 +151,23 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
       _showSnack('Δεν βρέθηκε πινακίδα στο παραστατικό. Συμπλήρωσε αριθμό κυκλοφορίας.');
       return;
     }
-    final vat = widget.client.entityVatNumber;
-    if (vat.isEmpty) {
-      _showSnack('Συμπλήρωσε ΑΦΜ στις ρυθμίσεις.');
-      return;
-    }
-
     setState(() => _submitting = true);
-    final result = await widget.client.registerTransfer(
-      qrUrl: widget.qrUrl,
-      details: TransportDetails(
+    try {
+      final updated = await widget.api.registerTransfer(
+        id: _record.id,
         vehicleNumber: vehicle,
-        transportType: _transportType,
-        carrierVatNumber: vat,
+        transportType: _transportType.code,
         trailerNumber: _trailerController.text.trim(),
-      ),
-    );
-    if (result.ok) {
+      );
       await _store.saveLastVehicle(
         vehicleNumber: vehicle,
         transportType: _transportType.code,
         trailerNumber: _trailerController.text.trim(),
       );
+      _finishOk(updated, 'Η διακίνηση καταχωρήθηκε.');
+    } on DigiApiException catch (error) {
+      _finishError(error.message);
     }
-    await _finishSubmit(
-      result,
-      lastAction: _plan?.advanceLabel ?? 'Έναρξη διακίνησης',
-      vehicleNumber: vehicle,
-      transportType: _transportType,
-    );
   }
 
   Future<void> _submitConfirm(DeliveryOutcome outcome) async {
@@ -233,94 +183,57 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
     }
 
     setState(() => _submitting = true);
-    final result = await widget.client.confirmDeliveryOutcome(
-      qrUrl: widget.qrUrl,
-      outcome: outcome,
-      packagingType: packagingType,
-      packagingQuantity: packagingQuantity,
-    );
-    await _finishSubmit(result, lastAction: outcome.label);
+    try {
+      final updated = await widget.api.confirmOutcome(
+        id: _record.id,
+        outcome: outcome.apiValue,
+        packagingType: packagingType,
+        packagingQuantity: packagingQuantity,
+      );
+      _finishOk(updated, outcome.label);
+    } on DigiApiException catch (error) {
+      _finishError(error.message);
+    }
   }
 
   Future<void> _submitReject() async {
     setState(() => _submitting = true);
-    final result = await widget.client.rejectDeliveryNote(
-      qrUrl: widget.qrUrl,
-      reason: _rejectReasonController.text.trim(),
-    );
-    await _finishSubmit(result, lastAction: 'Απόρριψη παραλαβής');
+    try {
+      final updated = await widget.api.rejectDelivery(
+        id: _record.id,
+        reason: _rejectReasonController.text.trim(),
+      );
+      _finishOk(updated, 'Η παραλαβή απορρίφθηκε.');
+    } on DigiApiException catch (error) {
+      _finishError(error.message);
+    }
   }
 
-  Future<void> _finishSubmit(
-    AadeSubmitResult result, {
-    String? lastAction,
-    String? vehicleNumber,
-    TransportType? transportType,
-  }) async {
+  void _finishOk(ScanRecord updated, String message) {
     if (!mounted) {
       return;
     }
-    if (!result.ok) {
-      setState(() {
-        _submitting = false;
-        _submitResult = result;
-      });
-      await _persistRecord(
-        lastAction: lastAction,
-        message: result.message,
-        vehicleNumber: vehicleNumber,
-        transportType: transportType,
-      );
-      return;
-    }
-
-    final refresh = await widget.client.getDeliveryNoteStatus(
-      qrUrl: widget.qrUrl,
-    );
-    if (!mounted) {
-      return;
-    }
-    final note = widget.client.parseStatusXml(refresh.body);
     setState(() {
       _submitting = false;
-      _submitResult = result;
-      if (note != null) {
-        _note = note;
-        _plan = DeliveryFlowPlan.forAction(
-          action: widget.action,
-          status: note.status,
-        );
-      }
+      _submitOk = true;
+      _submitMessage = message;
+      _record = updated;
+      _plan = DeliveryFlowPlan.forAction(
+        action: updated.action,
+        status: updated.status,
+      );
     });
-    await _persistRecord(
-      lastAction: lastAction,
-      message: result.message,
-      vehicleNumber: vehicleNumber,
-      transportType: transportType,
-    );
   }
 
-  Future<void> _persistRecord({
-    String? lastAction,
-    String? message,
-    String? vehicleNumber,
-    TransportType? transportType,
-  }) async {
-    final current = _record;
-    if (current == null) {
+  void _finishError(String message) {
+    if (!mounted) {
       return;
     }
-    final xml = _note?.rawXml ?? _submitResult?.body;
-    _record = current.copyWith(
-      status: _note?.status,
-      invoiceMark: _note?.invoiceMark ?? _submitResult?.mark,
-      dispatchTimestamp: _note?.dispatchTimestamp,
-      vehicleNumber: vehicleNumber ?? xmlTag(xml ?? '', 'vehicleNumber'),
-      transportType: transportType,
-      lastAction: lastAction,
-      lastMessage: message ?? _submitResult?.message,
-    );
-    await _history.update(_record!);
+    setState(() {
+      _submitting = false;
+      _submitOk = false;
+      _submitMessage = message;
+    });
   }
 
   void _showSnack(String message) {
@@ -330,7 +243,7 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
   }
 
   String _advanceLabel(DeliveryFlowPlan plan) {
-    if (widget.action == QrFlowAction.receive) {
+    if (_action == QrFlowAction.receive && widget.focusAction != 'registerTransfer') {
       return _outcome.label;
     }
     return plan.advanceLabel ?? 'Συνέχεια';
@@ -358,7 +271,7 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
           icon: const Icon(Icons.close),
           onPressed: _submitting ? null : _close,
         ),
-        title: Text(widget.action.title),
+        title: Text(_record.action.title),
       ),
       body: SafeArea(
         child: Padding(
@@ -372,12 +285,12 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
   }
 
   Widget _buildBody() {
-    if (_submitResult != null && _submitResult!.ok && _note != null) {
+    if (_submitOk) {
       return _ResultCard(
         ok: true,
-        title: _submitResult!.message,
-        status: _note!.status,
-        mark: _submitResult!.mark ?? _note!.invoiceMark,
+        title: _submitMessage ?? 'Καταχωρήθηκε',
+        status: _record.status,
+        mark: _record.invoiceMark,
         onClose: _close,
       );
     }
@@ -388,8 +301,13 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
         Expanded(
           child: ListView(
             children: [
-              if (_note != null) _StatusCard(note: _note!),
-              if (_error != null && _note == null) ...[
+              _StatusCard(
+                note: DeliveryNoteStatus(
+                  status: _record.status,
+                  invoiceMark: _record.invoiceMark,
+                ),
+              ),
+              if (_error != null && _record.status == DeliveryStatus.unknown) ...[
                 const SizedBox(height: 12),
                 _MessageBox(text: _error!, isError: true),
               ],
@@ -400,22 +318,23 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
                   style: const TextStyle(color: AppColors.muted, fontSize: 14),
                 ),
               ],
-              if (_submitResult != null && !_submitResult!.ok) ...[
+              if (_submitMessage != null && !_submitOk) ...[
                 const SizedBox(height: 16),
-                _MessageBox(text: _submitResult!.message, isError: true),
+                _MessageBox(text: _submitMessage!, isError: true),
               ],
               if (plan != null && plan.canAdvance) ...[
                 const SizedBox(height: 20),
-                if (widget.action == QrFlowAction.startRoute)
+                if (_action == QrFlowAction.startRoute ||
+                    widget.focusAction == 'registerTransfer')
                   _TransferForm(
                     vehicleController: _vehicleController,
                     trailerController: _trailerController,
                     transportType: _transportType,
                     vehicleFromDocument: _vehicleFromDocument,
                     onTransportType: (type) {
-                      _transportType = type;
+                      setState(() => _transportType = type);
                     },
-                    carrierVat: widget.client.entityVatNumber,
+                    carrierVat: widget.api.companyAfm,
                   )
                 else
                   _ReceiveForm(
@@ -443,7 +362,7 @@ class _DeliveryFlowPageState extends State<DeliveryFlowPage> {
             ),
           if (plan != null &&
               plan.allowsFailedDelivery &&
-              widget.action == QrFlowAction.receive) ...[
+              _action == QrFlowAction.receive) ...[
             const SizedBox(height: 10),
             OutlinedButton(
               onPressed: () => _submitConfirm(DeliveryOutcome.none),

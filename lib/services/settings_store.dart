@@ -9,6 +9,20 @@ class SettingsStore {
   static const afmKey = 'afm';
   static const subscriptionKeyKey = 'subscription_key';
   static const environmentKey = 'aade_environment';
+  static const apiEnvironmentKey = 'api_environment';
+  static const tokenKey = 'api_token';
+  static const companyIdKey = 'company_id';
+  static const companyConfirmedKey = 'company_confirmed';
+  static const companyNameKey = 'company_name';
+  static const companyAfmKey = 'company_afm';
+  static const firstNameKey = 'first_name';
+  static const lastNameKey = 'last_name';
+  static const identityUserIdKey = 'identity_user_id';
+  static const pinKey = 'identity_pin';
+  static const isMetaforikiKey = 'is_metaforiki';
+  static const isContainerKey = 'is_container';
+  static const isOtherKey = 'is_other';
+  static const isMetaforeasKey = 'is_metaforeas';
   static const lastVehicleNumberKey = 'last_vehicle_number';
   static const lastTransportTypeKey = 'last_transport_type';
   static const lastTrailerNumberKey = 'last_trailer_number';
@@ -26,6 +40,20 @@ class SettingsStore {
       afm: prefs.getString(afmKey) ?? '',
       subscriptionKey: prefs.getString(subscriptionKeyKey) ?? '',
       environment: AadeEnvironment.fromStorage(prefs.getString(environmentKey)),
+      apiEnvironment: ApiEnvironment.fromStorage(prefs.getString(apiEnvironmentKey)),
+      token: prefs.getString(tokenKey) ?? '',
+      companyId: prefs.getInt(companyIdKey) ?? 0,
+      companyConfirmed: prefs.getBool(companyConfirmedKey) ?? false,
+      companyName: prefs.getString(companyNameKey) ?? '',
+      companyAfm: prefs.getString(companyAfmKey) ?? '',
+      firstName: prefs.getString(firstNameKey) ?? '',
+      lastName: prefs.getString(lastNameKey) ?? '',
+      identityUserId: prefs.getString(identityUserIdKey) ?? '',
+      pin: prefs.getString(pinKey) ?? '',
+      isMetaforiki: prefs.getBool(isMetaforikiKey) ?? false,
+      isContainer: prefs.getBool(isContainerKey) ?? false,
+      isOther: prefs.getBool(isOtherKey) ?? false,
+      isMetaforeas: prefs.getBool(isMetaforeasKey) ?? true,
     );
   }
 
@@ -35,6 +63,20 @@ class SettingsStore {
     await prefs.setString(afmKey, settings.afm);
     await prefs.setString(subscriptionKeyKey, settings.subscriptionKey);
     await prefs.setString(environmentKey, settings.environment.name);
+    await prefs.setString(apiEnvironmentKey, settings.apiEnvironment.name);
+    await prefs.setString(tokenKey, settings.token);
+    await prefs.setInt(companyIdKey, settings.companyId);
+    await prefs.setBool(companyConfirmedKey, settings.companyConfirmed);
+    await prefs.setString(companyNameKey, settings.companyName);
+    await prefs.setString(companyAfmKey, settings.companyAfm);
+    await prefs.setString(firstNameKey, settings.firstName);
+    await prefs.setString(lastNameKey, settings.lastName);
+    await prefs.setString(identityUserIdKey, settings.identityUserId);
+    await prefs.setString(pinKey, settings.pin);
+    await prefs.setBool(isMetaforikiKey, settings.isMetaforiki);
+    await prefs.setBool(isContainerKey, settings.isContainer);
+    await prefs.setBool(isOtherKey, settings.isOther);
+    await prefs.setBool(isMetaforeasKey, settings.isMetaforeas);
   }
 
   Future<String> loadLastVehicleNumber() async {

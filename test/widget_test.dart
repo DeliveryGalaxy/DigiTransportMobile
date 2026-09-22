@@ -1,15 +1,14 @@
 import 'package:digi_transport/app.dart';
 import 'package:digi_transport/models/app_settings.dart';
+import 'package:digi_transport/models/delivery.dart';
 import 'package:digi_transport/models/scan_record.dart';
 import 'package:digi_transport/screens/home_screen.dart';
 import 'package:digi_transport/screens/qr_action_modal.dart';
-import 'package:digi_transport/services/aade_client.dart';
-import 'package:digi_transport/services/scan_history_store.dart';
+import 'package:digi_transport/services/digi_api.dart';
+import 'fake_digi_api.dart';
 import 'package:digi_transport/services/settings_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -26,9 +25,22 @@ void main() {
     expect(find.text('DigiTransport'), findsOneWidget);
   });
 
+  Future<void> seedReadyProfile() async {
+    SharedPreferences.setMockInitialValues({
+      SettingsStore.companyIdKey: 1,
+      SettingsStore.companyConfirmedKey: true,
+      SettingsStore.companyNameKey: 'ACME',
+      SettingsStore.firstNameKey: 'Nikos',
+      SettingsStore.lastNameKey: 'Papas',
+      SettingsStore.identityUserIdKey: 'ABC1234',
+      SettingsStore.tokenKey: 'token',
+    });
+  }
+
   testWidgets('QR button opens the action modal', (tester) async {
+    await seedReadyProfile();
     await tester.pumpWidget(const DigiTransportApp());
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.qr_code_2));
     await tester.pumpAndSettle();
@@ -37,18 +49,15 @@ void main() {
     expect(find.text('Παραλαβή'), findsOneWidget);
   });
 
-  testWidgets('settings persist username, AFM and subscription key', (
-    tester,
-  ) async {
+  testWidgets('settings persist first name', (tester) async {
+    await seedReadyProfile();
     await tester.pumpWidget(const DigiTransportApp());
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.settings_rounded));
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).at(0), 'driver01');
-    await tester.enterText(find.byType(TextField).at(1), '123456789');
-    await tester.enterText(find.byType(TextField).at(2), 'sub-key-1');
     await tester.tap(find.text('Αποθήκευση'));
     await tester.pumpAndSettle();
 
@@ -60,23 +69,16 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('driver01'), findsOneWidget);
-    expect(find.text('123456789'), findsOneWidget);
   });
 
-  testWidgets('AADE test button reports missing credentials', (tester) async {
+  testWidgets('afm step asks for a value', (tester) async {
     await tester.pumpWidget(const DigiTransportApp());
-    await tester.pump();
-
-    await tester.tap(find.byIcon(Icons.settings_rounded));
     await tester.pumpAndSettle();
 
-    await tester.drag(find.byType(ListView), const Offset(0, -400));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byType(OutlinedButton));
+    await tester.tap(find.text('Συνέχεια'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Αποτυχία σύνδεσης'), findsOneWidget);
-    expect(find.textContaining('Username και Subscription Key'), findsOneWidget);
+    expect(find.text('Συμπλήρωσε ΑΦΜ.'), findsOneWidget);
   });
 
   test('settings store writes values locally', () async {
@@ -97,17 +99,18 @@ void main() {
   });
 
   testWidgets('settings persist AADE environment', (tester) async {
+    await seedReadyProfile();
     await tester.pumpWidget(const DigiTransportApp());
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.settings_rounded));
     await tester.pumpAndSettle();
 
-    expect(find.text('https://mydataapidev.aade.gr'), findsOneWidget);
+    expect(find.text('https://i-deliver3.gr/digitransport/api/dev'), findsOneWidget);
 
     await tester.tap(find.byType(Switch));
     await tester.pump();
-    expect(find.text('https://mydatapi.aade.gr/myDATA'), findsOneWidget);
+    expect(find.text('https://i-deliver3.gr/digitransport/api/prod'), findsOneWidget);
 
     await tester.tap(find.text('Αποθήκευση'));
     await tester.pumpAndSettle();
@@ -117,35 +120,58 @@ void main() {
     await tester.tap(find.byIcon(Icons.settings_rounded));
     await tester.pumpAndSettle();
 
-    expect(find.text('https://mydatapi.aade.gr/myDATA'), findsOneWidget);
+    expect(find.text('https://i-deliver3.gr/digitransport/api/prod'), findsOneWidget);
     expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
   });
+
+  ScanRecord sampleScan({
+    required String id,
+    required QrFlowAction action,
+    required DeliveryStatus status,
+    DateTime? scannedAt,
+    String? invoiceMark,
+    String? vehicleNumber,
+    bool vehicleFromDocument = false,
+    List<ScanAction> actions = const [],
+  }) {
+    return ScanRecord(
+      id: id,
+      qrUrl: 'https://example.com/fd/$id',
+      action: action,
+      scannedAt: scannedAt ?? DateTime(2026, 9, 1, 10),
+      status: status,
+      invoiceMark: invoiceMark,
+      vehicleNumber: vehicleNumber,
+      vehicleFromDocument: vehicleFromDocument,
+      actions: actions,
+    );
+  }
 
   testWidgets('QR start flow shows AADE status instead of the scanned URL', (
     tester,
   ) async {
     const qrUrl =
         'https://beta-epsilondigital.epsilonnet.gr/fd/d16134dbe38e49e8709308def398fa17:6';
-    const statusXml = '''
-<GetDeliveryNoteStatusResponse>
-  <invoiceMark>111111111111111</invoiceMark>
-  <status>REGISTERED</status>
-</GetDeliveryNoteStatusResponse>
-''';
-    final client = AadeClient(
-      settings: const AppSettings(
-        username: 'user01',
-        afm: '123456789',
-        subscriptionKey: 'key',
-      ),
-      httpClient: MockClient((_) async => http.Response(statusXml, 200)),
+    final scan = sampleScan(
+      id: '1',
+      action: QrFlowAction.startRoute,
+      status: DeliveryStatus.registered,
+      invoiceMark: '111111111111111',
+      actions: const [
+        ScanAction(id: 'registerTransfer', label: 'Έναρξη διακίνησης'),
+      ],
+    );
+    final api = FakeDigiApi(
+      scans: [scan],
+      openResult: OpenScanResult(scan: scan, existed: false),
+      refreshed: scan,
     );
 
     await tester.pumpWidget(
       MaterialApp(
         home: QrActionModal(
           onFinished: () {},
-          client: client,
+          api: api,
           scanQr: (_) async => qrUrl,
         ),
       ),
@@ -166,41 +192,25 @@ void main() {
     tester,
   ) async {
     const qrUrl = 'https://example.com/fd/abc:6';
-    const statusXml = '''
-<GetDeliveryNoteStatusResponse>
-  <invoiceMark>111111111111111</invoiceMark>
-  <status>REGISTERED</status>
-</GetDeliveryNoteStatusResponse>
-''';
-    const invoiceXml = '''
-<RequestedDoc>
-  <invoice>
-    <invoiceHeader>
-      <vehicleNumber>IYY1234</vehicleNumber>
-    </invoiceHeader>
-    <mark>111111111111111</mark>
-  </invoice>
-</RequestedDoc>
-''';
-    final client = AadeClient(
-      settings: const AppSettings(
-        username: 'user01',
-        afm: '123456789',
-        subscriptionKey: 'key',
-      ),
-      httpClient: MockClient((request) async {
-        if (request.url.path.contains('Request')) {
-          return http.Response(invoiceXml, 200);
-        }
-        return http.Response(statusXml, 200);
-      }),
+    final scan = sampleScan(
+      id: '1',
+      action: QrFlowAction.startRoute,
+      status: DeliveryStatus.registered,
+      invoiceMark: '111111111111111',
+      vehicleNumber: 'IYY1234',
+      vehicleFromDocument: true,
+    );
+    final api = FakeDigiApi(
+      scans: [scan],
+      openResult: OpenScanResult(scan: scan, existed: false),
+      refreshed: scan,
     );
 
     await tester.pumpWidget(
       MaterialApp(
         home: QrActionModal(
           onFinished: () {},
-          client: client,
+          api: api,
           scanQr: (_) async => qrUrl,
         ),
       ),
@@ -217,30 +227,24 @@ void main() {
   testWidgets('home lists scans newest first and deletes only from the list', (
     tester,
   ) async {
-    final store = ScanHistoryStore();
-    await store.add(
-      ScanRecord(
-        id: 'old',
-        qrUrl: 'https://example.com/fd/old',
-        action: QrFlowAction.startRoute,
-        scannedAt: DateTime(2026, 1, 1, 10),
-        status: DeliveryStatus.registered,
-      ),
+    final newer = sampleScan(
+      id: 'new',
+      action: QrFlowAction.receive,
+      status: DeliveryStatus.inTransit,
+      scannedAt: DateTime(2026, 9, 11, 15, 30),
+      invoiceMark: '999',
     );
-    await store.add(
-      ScanRecord(
-        id: 'new',
-        qrUrl: 'https://example.com/fd/new',
-        action: QrFlowAction.receive,
-        scannedAt: DateTime(2026, 9, 11, 15, 30),
-        status: DeliveryStatus.inTransit,
-        invoiceMark: '999',
-      ),
+    final older = sampleScan(
+      id: 'old',
+      action: QrFlowAction.startRoute,
+      status: DeliveryStatus.registered,
+      scannedAt: DateTime(2026, 1, 1, 10),
     );
+    final api = FakeDigiApi(scans: [newer, older], refreshed: newer);
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(body: HomeScreen(historyStore: store)),
+        home: Scaffold(body: HomeScreen(api: api)),
       ),
     );
     await tester.pump();
@@ -271,45 +275,30 @@ void main() {
 
     expect(find.text('Παραλαβή'), findsNothing);
     expect(find.text('Έναρξη Δρομολογίου'), findsOneWidget);
-    expect((await store.load()).map((record) => record.id), ['old']);
+    expect(api.scans.map((record) => record.id), ['old']);
   });
 
   testWidgets('opening a list item refreshes AADE status when it changed', (
     tester,
   ) async {
-    final store = ScanHistoryStore();
-    await store.add(
-      ScanRecord(
-        id: 'saved',
-        qrUrl: 'https://example.com/fd/saved',
-        action: QrFlowAction.startRoute,
-        scannedAt: DateTime(2026, 9, 1, 10),
-        status: DeliveryStatus.registered,
-        invoiceMark: '111',
-      ),
+    final saved = sampleScan(
+      id: 'saved',
+      action: QrFlowAction.startRoute,
+      status: DeliveryStatus.registered,
+      invoiceMark: '111',
     );
-    final client = AadeClient(
-      settings: const AppSettings(
-        username: 'user01',
-        afm: '123456789',
-        subscriptionKey: 'key',
-      ),
-      httpClient: MockClient(
-        (_) async => http.Response('''
-<GetDeliveryNoteStatusResponse>
-  <invoiceMark>111</invoiceMark>
-  <status>IN_TRANSIT</status>
-  <vehicleNumber>IYY1234</vehicleNumber>
-</GetDeliveryNoteStatusResponse>
-''', 200),
-      ),
+    final refreshed = saved.copyWith(
+      status: DeliveryStatus.inTransit,
+      vehicleNumber: 'IYY1234',
+      actions: const [
+        ScanAction(id: 'registerTransfer', label: 'Μεταφόρτωση'),
+      ],
     );
+    final api = FakeDigiApi(scans: [saved], refreshed: refreshed);
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(
-          body: HomeScreen(historyStore: store, client: client),
-        ),
+        home: Scaffold(body: HomeScreen(api: api)),
       ),
     );
     await tester.pump();
@@ -323,47 +312,34 @@ void main() {
     expect(find.text('Σε διακίνηση'), findsWidgets);
     expect(find.text('IYY1234'), findsOneWidget);
     expect(find.text('Έναρξη διακίνησης'), findsNothing);
-    expect((await store.load()).first.status, DeliveryStatus.inTransit);
+    expect(find.text('Μεταφόρτωση'), findsOneWidget);
   });
 
   testWidgets('scanning a known MARK opens the saved card instead of the flow', (
     tester,
   ) async {
     const qrUrl = 'https://example.com/fd/abc:6';
-    final history = ScanHistoryStore();
-    await history.add(
-      ScanRecord(
-        id: 'saved',
-        qrUrl: 'https://example.com/fd/previous',
-        action: QrFlowAction.startRoute,
-        scannedAt: DateTime(2026, 9, 1, 10),
-        status: DeliveryStatus.registered,
-        invoiceMark: '111111111111111',
-        vehicleNumber: 'IYY1234',
-      ),
+    final saved = sampleScan(
+      id: 'saved',
+      action: QrFlowAction.startRoute,
+      status: DeliveryStatus.inTransit,
+      invoiceMark: '111111111111111',
+      vehicleNumber: 'IYY1234',
+      actions: const [
+        ScanAction(id: 'registerTransfer', label: 'Μεταφόρτωση'),
+      ],
     );
-    final client = AadeClient(
-      settings: const AppSettings(
-        username: 'user01',
-        afm: '123456789',
-        subscriptionKey: 'key',
-      ),
-      httpClient: MockClient(
-        (_) async => http.Response('''
-<GetDeliveryNoteStatusResponse>
-  <invoiceMark>111111111111111</invoiceMark>
-  <status>IN_TRANSIT</status>
-</GetDeliveryNoteStatusResponse>
-''', 200),
-      ),
+    final api = FakeDigiApi(
+      scans: [saved],
+      openResult: OpenScanResult(scan: saved, existed: true),
+      refreshed: saved,
     );
 
     await tester.pumpWidget(
       MaterialApp(
         home: QrActionModal(
           onFinished: () {},
-          client: client,
-          historyStore: history,
+          api: api,
           scanQr: (_) async => qrUrl,
         ),
       ),
@@ -377,6 +353,6 @@ void main() {
     expect(find.text('Έναρξη διακίνησης'), findsNothing);
     expect(find.text('Σε διακίνηση'), findsOneWidget);
     expect(find.text('IYY1234'), findsOneWidget);
-    expect((await history.load()).map((record) => record.id), ['saved']);
+    expect(api.scans.map((record) => record.id), ['saved']);
   });
 }

@@ -1,25 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/scan_record.dart';
-import '../services/aade_client.dart';
-import '../services/scan_history_store.dart';
-import '../services/scan_record_sync.dart';
+import '../services/digi_api.dart';
 import '../theme/app_theme.dart';
+import 'delivery_flow_page.dart';
 
 class ScanDetailSheet extends StatefulWidget {
   const ScanDetailSheet({
     super.key,
     required this.record,
+    required this.api,
     required this.onDelete,
-    this.client,
-    this.historyStore,
     this.onUpdated,
   });
 
   final ScanRecord record;
+  final DigiApi api;
   final Future<void> Function() onDelete;
-  final AadeClient? client;
-  final ScanHistoryStore? historyStore;
   final ValueChanged<ScanRecord>? onUpdated;
 
   @override
@@ -28,7 +26,11 @@ class ScanDetailSheet extends StatefulWidget {
 
 class _ScanDetailSheetState extends State<ScanDetailSheet> {
   late ScanRecord _record;
+  _Pane _pane = _Pane.details;
   bool _refreshing = false;
+  bool _loadingHistory = false;
+  List<DeliveryEvent> _events = [];
+  String? _historyError;
 
   @override
   void initState() {
@@ -38,26 +40,54 @@ class _ScanDetailSheetState extends State<ScanDetailSheet> {
   }
 
   Future<void> _refresh() async {
-    final client = widget.client;
-    final store = widget.historyStore;
-    if (client == null || store == null || !client.isConfigured) {
-      return;
-    }
     setState(() => _refreshing = true);
-    final updated = await ScanRecordSync.refresh(
-      client: client,
-      store: store,
-      record: _record,
-    );
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _refreshing = false;
-      _record = updated;
-    });
-    if (updated != widget.record && updated.id == widget.record.id) {
+    try {
+      final updated = await widget.api.refreshScan(_record.id);
+      if (!mounted) return;
+      setState(() {
+        _refreshing = false;
+        _record = updated;
+      });
       widget.onUpdated?.call(updated);
+    } on DigiApiException {
+      if (!mounted) return;
+      setState(() => _refreshing = false);
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    setState(() {
+      _loadingHistory = true;
+      _historyError = null;
+    });
+    try {
+      final events = await widget.api.history(_record.id);
+      if (!mounted) return;
+      setState(() {
+        _loadingHistory = false;
+        _events = events;
+      });
+    } on DigiApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingHistory = false;
+        _historyError = error.message;
+      });
+    }
+  }
+
+  Future<void> _runAction(ScanAction action) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => DeliveryFlowPage(
+          api: widget.api,
+          record: _record,
+          focusAction: action.id,
+        ),
+      ),
+    );
+    if (mounted) {
+      await _refresh();
     }
   }
 
@@ -65,47 +95,98 @@ class _ScanDetailSheetState extends State<ScanDetailSheet> {
   Widget build(BuildContext context) {
     final record = _record;
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: const Color(0xFFD5DEE2),
-                borderRadius: BorderRadius.circular(4),
-              ),
-            ),
-            const SizedBox(height: 16),
-            if (_refreshing)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+      child: SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.78,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+          child: Column(
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFD5DEE2),
+                  borderRadius: BorderRadius.circular(4),
                 ),
               ),
-            Text(
-              record.action.title,
-              style: const TextStyle(
-                color: AppColors.navy,
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
+              const SizedBox(height: 16),
+              Text(
+                record.action.title,
+                style: const TextStyle(
+                  color: AppColors.navy,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              record.status.label,
-              style: const TextStyle(
-                color: AppColors.teal,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
+              const SizedBox(height: 6),
+              Text(
+                record.status.label,
+                style: const TextStyle(
+                  color: AppColors.teal,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
+              const SizedBox(height: 16),
+              SegmentedButton<_Pane>(
+                segments: const [
+                  ButtonSegment(value: _Pane.details, label: Text('Στοιχεία')),
+                  ButtonSegment(value: _Pane.qr, label: Text('QR Code')),
+                  ButtonSegment(value: _Pane.history, label: Text('Ιστορικό')),
+                ],
+                selected: {_pane},
+                onSelectionChanged: (selection) {
+                  setState(() => _pane = selection.first);
+                  if (selection.first == _Pane.history &&
+                      _events.isEmpty &&
+                      !_loadingHistory) {
+                    _loadHistory();
+                  }
+                },
+              ),
+              const SizedBox(height: 16),
+              Expanded(child: _paneBody(record)),
+              if (_refreshing)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              for (final action in record.actions) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: () => _runAction(action),
+                    child: Text(action.label),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFB3261E),
+                    side: const BorderSide(color: Color(0xFFB3261E), width: 1.4),
+                  ),
+                  onPressed: widget.onDelete,
+                  child: const Text('Διαγραφή'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _paneBody(ScanRecord record) {
+    return switch (_pane) {
+      _Pane.details => ListView(
+          children: [
             _DetailRow(label: 'Σάρωση', value: record.scannedAtLabel),
             if (record.invoiceMark != null && record.invoiceMark!.isNotEmpty)
               _DetailRow(label: 'ΜΑΡΚ', value: record.invoiceMark!),
@@ -115,33 +196,76 @@ class _ScanDetailSheetState extends State<ScanDetailSheet> {
                 label: 'Έναρξη διακίνησης',
                 value: record.dispatchTimestamp!,
               ),
-            if (record.vehicleNumber != null &&
-                record.vehicleNumber!.isNotEmpty)
+            if (record.vehicleNumber != null && record.vehicleNumber!.isNotEmpty)
               _DetailRow(label: 'Όχημα', value: record.vehicleNumber!),
             if (record.transportType != null)
-              _DetailRow(
-                label: 'Είδος μέσου',
-                value: record.transportType!.label,
-              ),
+              _DetailRow(label: 'Είδος μέσου', value: record.transportType!.label),
             if (record.lastAction != null && record.lastAction!.isNotEmpty)
               _DetailRow(label: 'Τελευταία ενέργεια', value: record.lastAction!),
             if (record.lastMessage != null && record.lastMessage!.isNotEmpty)
               _DetailRow(label: 'Μήνυμα', value: record.lastMessage!),
-            const SizedBox(height: 24),
-            OutlinedButton(
-              style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFFB3261E),
-                side: const BorderSide(color: Color(0xFFB3261E), width: 1.4),
-              ),
-              onPressed: widget.onDelete,
-              child: const Text('Διαγραφή'),
-            ),
           ],
         ),
-      ),
+      _Pane.qr => Center(
+          child: QrImageView(
+            data: record.qrUrl,
+            size: 220,
+            backgroundColor: Colors.white,
+          ),
+        ),
+      _Pane.history => _historyBody(),
+    };
+  }
+
+  Widget _historyBody() {
+    if (_loadingHistory) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_historyError != null) {
+      return Text(_historyError!, style: const TextStyle(color: AppColors.muted));
+    }
+    if (_events.isEmpty) {
+      return const Text(
+        'Δεν υπάρχει ιστορικό διακίνησης από την ΑΑΔΕ.',
+        style: TextStyle(color: AppColors.muted),
+      );
+    }
+    return ListView.separated(
+      itemCount: _events.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 10),
+      itemBuilder: (context, index) {
+        final event = _events[index];
+        final details = [
+          if (event.eventTimestamp != null && event.eventTimestamp!.isNotEmpty)
+            event.eventTimestamp!,
+          if (event.vehicleNumber != null && event.vehicleNumber!.isNotEmpty)
+            'Όχημα ${event.vehicleNumber}',
+          if (event.actorVat != null && event.actorVat!.isNotEmpty)
+            'ΑΦΜ ${event.actorVat}',
+          if (event.outcome != null && event.outcome!.isNotEmpty)
+            event.outcome!,
+          if (event.reason != null && event.reason!.isNotEmpty) event.reason!,
+        ].join(' · ');
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              event.eventTypeLabel,
+              style: const TextStyle(
+                color: AppColors.navy,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            if (details.isNotEmpty)
+              Text(details, style: const TextStyle(color: AppColors.muted, fontSize: 13)),
+          ],
+        );
+      },
     );
   }
 }
+
+enum _Pane { details, qr, history }
 
 class _DetailRow extends StatelessWidget {
   const _DetailRow({required this.label, required this.value});
@@ -208,8 +332,7 @@ Future<bool> confirmLocalScanDelete(BuildContext context) async {
 Future<void> showScanRecordSheet({
   required BuildContext context,
   required ScanRecord record,
-  required ScanHistoryStore historyStore,
-  AadeClient? client,
+  required DigiApi api,
   VoidCallback? onChanged,
 }) {
   return showModalBottomSheet<void>(
@@ -222,15 +345,14 @@ Future<void> showScanRecordSheet({
     builder: (sheetContext) {
       return ScanDetailSheet(
         record: record,
-        client: client,
-        historyStore: historyStore,
+        api: api,
         onUpdated: (_) => onChanged?.call(),
         onDelete: () async {
           final confirmed = await confirmLocalScanDelete(sheetContext);
           if (!confirmed || !sheetContext.mounted) {
             return;
           }
-          await historyStore.delete(record.id);
+          await api.deleteScan(record.id);
           if (sheetContext.mounted) {
             Navigator.of(sheetContext).pop();
           }

@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../models/scan_record.dart';
-import '../services/aade_client.dart';
-import '../services/scan_history_store.dart';
-import '../services/scan_record_sync.dart';
-import '../services/settings_store.dart';
+import '../models/delivery.dart';
+import '../services/aade_xml.dart';
+import '../services/digi_api.dart';
 import '../theme/app_theme.dart';
 import 'delivery_flow_page.dart';
 import 'qr_scanner_page.dart';
@@ -14,16 +12,12 @@ class QrActionModal extends StatefulWidget {
   const QrActionModal({
     super.key,
     required this.onFinished,
-    this.client,
-    this.store,
-    this.historyStore,
+    this.api,
     this.scanQr,
   });
 
   final VoidCallback onFinished;
-  final AadeClient? client;
-  final SettingsStore? store;
-  final ScanHistoryStore? historyStore;
+  final DigiApi? api;
   final Future<String?> Function(String title)? scanQr;
 
   @override
@@ -46,83 +40,55 @@ class _QrActionModalState extends State<QrActionModal> {
     }
 
     final qrUrl = extractQrUrl(raw);
-    final client =
-        widget.client ?? await AadeClient.fromStore(store: widget.store);
-    final history = widget.historyStore ?? ScanHistoryStore();
+    final api = widget.api ?? await DigiApi.fromStore();
     if (!mounted) {
+      return;
+    }
+    if (!api.isLoggedIn) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Συνδέσου από τις Ρυθμίσεις.')),
+      );
       return;
     }
 
     setState(() => _lookingUp = true);
-    final existing = await _findExistingRecord(
-      client: client,
-      history: history,
-      qrUrl: qrUrl,
-    );
-    if (!mounted) {
-      return;
-    }
-    setState(() => _lookingUp = false);
-
-    if (existing != null) {
-      await showScanRecordSheet(
-        context: context,
-        record: existing,
-        historyStore: history,
-        client: client,
-      );
+    try {
+      final opened = await api.openScan(qrUrl: qrUrl, action: action);
       if (!mounted) {
         return;
       }
-      Navigator.of(context).pop();
-      widget.onFinished();
+      setState(() => _lookingUp = false);
+      if (opened.existed) {
+        await showScanRecordSheet(
+          context: context,
+          record: opened.scan,
+          api: api,
+        );
+      } else {
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute(
+            builder: (_) => DeliveryFlowPage(
+              api: api,
+              record: opened.scan,
+            ),
+          ),
+        );
+      }
+    } on DigiApiException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _lookingUp = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message)),
+      );
       return;
     }
-
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => DeliveryFlowPage(
-          action: action,
-          qrUrl: qrUrl,
-          client: client,
-          store: widget.store,
-          historyStore: history,
-        ),
-      ),
-    );
     if (!mounted) {
       return;
     }
     Navigator.of(context).pop();
     widget.onFinished();
-  }
-
-  Future<ScanRecord?> _findExistingRecord({
-    required AadeClient client,
-    required ScanHistoryStore history,
-    required String qrUrl,
-  }) async {
-    final byUrl = await history.findByQrUrl(qrUrl);
-    if (!client.isConfigured) {
-      return byUrl;
-    }
-    try {
-      final result = await client.getDeliveryNoteStatus(qrUrl: qrUrl);
-      final note = client.parseStatusXml(result.body);
-      final byMark = await history.findByMark(note?.invoiceMark);
-      final found = byMark ?? byUrl;
-      if (found == null) {
-        return null;
-      }
-      if (note == null || !ScanRecordSync.isDifferent(found, note)) {
-        return found;
-      }
-      final updated = ScanRecordSync.mergeStatus(found, note);
-      await history.update(updated);
-      return updated;
-    } catch (_) {
-      return byUrl;
-    }
   }
 
   @override
