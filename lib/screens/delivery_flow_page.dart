@@ -5,6 +5,7 @@ import '../models/delivery.dart';
 import '../models/scan_record.dart';
 import '../services/delivery_flow.dart';
 import '../services/digi_api.dart';
+import '../services/plate_text.dart';
 import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
 
@@ -570,9 +571,9 @@ class _TransferForm extends StatelessWidget {
         else
           TextField(
             controller: vehicleController,
-            textCapitalization: TextCapitalization.characters,
             textInputAction: TextInputAction.next,
             inputFormatters: [
+              const PlateTextInputFormatter(),
               FilteringTextInputFormatter.allow(RegExp(r'[A-Za-zΑ-Ωα-ω0-9\- ]')),
               LengthLimitingTextInputFormatter(50),
             ],

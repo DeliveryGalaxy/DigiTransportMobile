@@ -43,10 +43,12 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(find.byIcon(Icons.qr_code_2));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump();
 
-    expect(find.text('Έναρξη Δρομολογίου'), findsOneWidget);
-    expect(find.text('Παραλαβή'), findsOneWidget);
+    expect(find.text('Σάρωση'), findsWidgets);
+    expect(find.text('Έναρξη Δρομολογίου'), findsNothing);
+    expect(find.text('Παραλαβή'), findsNothing);
   });
 
   testWidgets('settings persist first name', (tester) async {
@@ -69,6 +71,34 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('driver01'), findsOneWidget);
+  });
+
+  testWidgets('change vehicle dialog opens', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      SettingsStore.companyIdKey: 1,
+      SettingsStore.companyConfirmedKey: true,
+      SettingsStore.isMetaforikiKey: true,
+      SettingsStore.identityUserIdKey: 'ABC1234',
+      SettingsStore.tokenKey: 'token',
+      SettingsStore.firstNameKey: 'Nikos',
+      SettingsStore.lastNameKey: 'Papas',
+    });
+    await tester.pumpWidget(
+      MaterialApp(home: HomeScreen(api: FakeDigiApi())),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Αλλαγή'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Αλλαγή οχήματος'), findsOneWidget);
+    expect(find.text('Πινακίδα'), findsOneWidget);
+
+    await tester.tap(find.text('Άκυρο'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Αλλαγή οχήματος'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('afm step asks for a value', (tester) async {
@@ -96,32 +126,6 @@ void main() {
     expect(loaded.afm, '999999999');
     expect(loaded.subscriptionKey, 'abc');
     expect(loaded.environment, AadeEnvironment.development);
-  });
-
-  testWidgets('settings persist AADE environment', (tester) async {
-    await seedReadyProfile();
-    await tester.pumpWidget(const DigiTransportApp());
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.byIcon(Icons.settings_rounded));
-    await tester.pumpAndSettle();
-
-    expect(find.text('https://i-deliver3.gr/digitransport/api/dev'), findsOneWidget);
-
-    await tester.tap(find.byType(Switch));
-    await tester.pump();
-    expect(find.text('https://i-deliver3.gr/digitransport/api/prod'), findsOneWidget);
-
-    await tester.tap(find.text('Αποθήκευση'));
-    await tester.pumpAndSettle();
-
-    await tester.pumpWidget(const DigiTransportApp());
-    await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.settings_rounded));
-    await tester.pumpAndSettle();
-
-    expect(find.text('https://i-deliver3.gr/digitransport/api/prod'), findsOneWidget);
-    expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
   });
 
   ScanRecord sampleScan({
@@ -177,13 +181,11 @@ void main() {
       ),
     );
     await tester.pump();
-
-    await tester.tap(find.text('Έναρξη Δρομολογίου'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
     expect(find.text(qrUrl), findsNothing);
-    expect(find.text('Εκδόθηκε'), findsOneWidget);
+    expect(find.text('Εκδόθηκε'), findsWidgets);
     expect(find.text('Έναρξη διακίνησης'), findsOneWidget);
     expect(find.text('ΜΑΡΚ 111111111111111'), findsOneWidget);
   });
@@ -216,11 +218,10 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.tap(find.text('Έναρξη Δρομολογίου'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 80));
 
-    expect(find.text('Πινακίδα από παραστατικό: IYY1234'), findsOneWidget);
+    expect(find.text('IYY1234'), findsOneWidget);
     expect(find.text('Αριθμός κυκλοφορίας'), findsNothing);
   });
 
@@ -250,31 +251,23 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(find.text('Παραλαβή'), findsOneWidget);
-    expect(find.text('Έναρξη Δρομολογίου'), findsOneWidget);
+    expect(find.text('Σε διακίνηση'), findsOneWidget);
+    expect(find.text('Εκδόθηκε'), findsOneWidget);
     expect(
-      tester.getTopLeft(find.text('Παραλαβή')).dy <
-          tester.getTopLeft(find.text('Έναρξη Δρομολογίου')).dy,
+      tester.getTopLeft(find.text('Σε διακίνηση')).dy <
+          tester.getTopLeft(find.text('Εκδόθηκε')).dy,
       isTrue,
     );
 
-    await tester.tap(find.text('Παραλαβή'));
+    await tester.drag(find.text('Σε διακίνηση'), const Offset(-400, 0));
     await tester.pumpAndSettle();
-    expect(find.text('ΜΑΡΚ'), findsOneWidget);
-    expect(find.text('999'), findsOneWidget);
+    expect(find.textContaining('Δεν αλλάζει κάτι στην ΑΑΔΕ'), findsOneWidget);
 
-    await tester.tap(find.text('Διαγραφή'));
-    await tester.pumpAndSettle();
-    expect(
-      find.textContaining('χωρίς να επηρεάσει κάτι στην ΑΑΔΕ'),
-      findsOneWidget,
-    );
-
-    await tester.tap(find.text('Διαγραφή').last);
+    await tester.tap(find.text('OK'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Παραλαβή'), findsNothing);
-    expect(find.text('Έναρξη Δρομολογίου'), findsOneWidget);
+    expect(find.text('Σε διακίνηση'), findsNothing);
+    expect(find.text('Εκδόθηκε'), findsOneWidget);
     expect(api.scans.map((record) => record.id), ['old']);
   });
 
@@ -306,7 +299,7 @@ void main() {
 
     expect(find.text('Εκδόθηκε'), findsOneWidget);
 
-    await tester.tap(find.text('Έναρξη Δρομολογίου'));
+    await tester.tap(find.text('Εκδόθηκε'));
     await tester.pumpAndSettle();
 
     expect(find.text('Σε διακίνηση'), findsWidgets);
@@ -345,13 +338,12 @@ void main() {
       ),
     );
     await tester.pump();
-
-    await tester.tap(find.text('Έναρξη Δρομολογίου'));
+    await tester.pump();
     await tester.pumpAndSettle();
 
-    expect(find.text('Διαγραφή'), findsOneWidget);
+    expect(find.text('Διαγραφή'), findsNothing);
     expect(find.text('Έναρξη διακίνησης'), findsNothing);
-    expect(find.text('Σε διακίνηση'), findsOneWidget);
+    expect(find.text('Σε διακίνηση'), findsWidgets);
     expect(find.text('IYY1234'), findsOneWidget);
     expect(api.scans.map((record) => record.id), ['saved']);
   });

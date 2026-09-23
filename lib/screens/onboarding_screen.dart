@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/app_settings.dart';
 import '../services/digi_api.dart';
+import '../services/plate_text.dart';
 import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
 
@@ -73,7 +75,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
     setState(() => _busy = true);
     try {
-      final api = DigiApi(baseUrl: _settings.apiEnvironment.baseUrl);
+      final api = DigiApi(baseUrl: digiApiBaseUrl);
       final company = await api.lookupCompany(afm);
       if (!mounted) {
         return;
@@ -154,7 +156,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
     setState(() => _busy = true);
     try {
-      final api = DigiApi(baseUrl: _settings.apiEnvironment.baseUrl);
+      final api = DigiApi(baseUrl: digiApiBaseUrl);
       final result = await api.verifyIdentity(
         companyId: _settings.companyId,
         userId: identity,
@@ -341,7 +343,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         const SizedBox(height: 16),
         TextField(
           controller: _identityController,
-          textCapitalization: plated ? TextCapitalization.characters : TextCapitalization.none,
+          inputFormatters: plated ? const [PlateTextInputFormatter()] : null,
           decoration: InputDecoration(labelText: plated ? 'Πινακίδα' : 'Username'),
         ),
         const SizedBox(height: 16),

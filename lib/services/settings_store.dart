@@ -9,7 +9,6 @@ class SettingsStore {
   static const afmKey = 'afm';
   static const subscriptionKeyKey = 'subscription_key';
   static const environmentKey = 'aade_environment';
-  static const apiEnvironmentKey = 'api_environment';
   static const tokenKey = 'api_token';
   static const companyIdKey = 'company_id';
   static const companyConfirmedKey = 'company_confirmed';
@@ -40,7 +39,6 @@ class SettingsStore {
       afm: prefs.getString(afmKey) ?? '',
       subscriptionKey: prefs.getString(subscriptionKeyKey) ?? '',
       environment: AadeEnvironment.fromStorage(prefs.getString(environmentKey)),
-      apiEnvironment: ApiEnvironment.fromStorage(prefs.getString(apiEnvironmentKey)),
       token: prefs.getString(tokenKey) ?? '',
       companyId: prefs.getInt(companyIdKey) ?? 0,
       companyConfirmed: prefs.getBool(companyConfirmedKey) ?? false,
@@ -63,7 +61,7 @@ class SettingsStore {
     await prefs.setString(afmKey, settings.afm);
     await prefs.setString(subscriptionKeyKey, settings.subscriptionKey);
     await prefs.setString(environmentKey, settings.environment.name);
-    await prefs.setString(apiEnvironmentKey, settings.apiEnvironment.name);
+    await prefs.remove('api_environment');
     await prefs.setString(tokenKey, settings.token);
     await prefs.setInt(companyIdKey, settings.companyId);
     await prefs.setBool(companyConfirmedKey, settings.companyConfirmed);

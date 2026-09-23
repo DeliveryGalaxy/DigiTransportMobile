@@ -1,19 +1,4 @@
-enum ApiEnvironment {
-  development('https://i-deliver3.gr/digitransport/api/dev'),
-  production('https://i-deliver3.gr/digitransport/api/prod');
-
-  const ApiEnvironment(this.baseUrl);
-
-  final String baseUrl;
-
-  bool get isProduction => this == ApiEnvironment.production;
-
-  static ApiEnvironment fromStorage(String? value) {
-    return value == ApiEnvironment.production.name
-        ? ApiEnvironment.production
-        : ApiEnvironment.development;
-  }
-}
+const digiApiBaseUrl = 'https://i-deliver3.gr/digitransport/api/prod';
 
 enum AadeEnvironment {
   development('https://mydataapidev.aade.gr'),
@@ -38,7 +23,6 @@ class AppSettings {
     this.afm = '',
     this.subscriptionKey = '',
     this.environment = AadeEnvironment.development,
-    this.apiEnvironment = ApiEnvironment.development,
     this.token = '',
     this.companyId = 0,
     this.companyConfirmed = false,
@@ -58,7 +42,6 @@ class AppSettings {
   final String afm;
   final String subscriptionKey;
   final AadeEnvironment environment;
-  final ApiEnvironment apiEnvironment;
   final String token;
   final int companyId;
   final bool companyConfirmed;
@@ -90,7 +73,6 @@ class AppSettings {
     String? afm,
     String? subscriptionKey,
     AadeEnvironment? environment,
-    ApiEnvironment? apiEnvironment,
     String? token,
     int? companyId,
     bool? companyConfirmed,
@@ -110,7 +92,6 @@ class AppSettings {
       afm: afm ?? this.afm,
       subscriptionKey: subscriptionKey ?? this.subscriptionKey,
       environment: environment ?? this.environment,
-      apiEnvironment: apiEnvironment ?? this.apiEnvironment,
       token: token ?? this.token,
       companyId: companyId ?? this.companyId,
       companyConfirmed: companyConfirmed ?? this.companyConfirmed,

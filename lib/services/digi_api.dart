@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/app_settings.dart';
 import '../models/delivery.dart';
 import '../models/scan_record.dart';
 import 'settings_store.dart';
@@ -43,7 +44,7 @@ class DigiApi {
   }) async {
     final settings = await (store ?? SettingsStore()).load();
     return DigiApi(
-      baseUrl: settings.apiEnvironment.baseUrl,
+      baseUrl: digiApiBaseUrl,
       token: settings.token,
       companyAfm: settings.companyAfm,
       httpClient: httpClient,

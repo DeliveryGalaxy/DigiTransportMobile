@@ -1,34 +1,34 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../models/delivery.dart';
 import '../models/scan_record.dart';
 import '../services/digi_api.dart';
+import '../services/plate_text.dart';
+import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
-import 'delivery_flow_page.dart';
 
-class ScanDetailSheet extends StatefulWidget {
-  const ScanDetailSheet({
+class ScanDetailPage extends StatefulWidget {
+  const ScanDetailPage({
     super.key,
     required this.record,
     required this.api,
-    required this.onDelete,
-    this.onUpdated,
+    this.onChanged,
   });
 
   final ScanRecord record;
   final DigiApi api;
-  final Future<void> Function() onDelete;
-  final ValueChanged<ScanRecord>? onUpdated;
+  final VoidCallback? onChanged;
 
   @override
-  State<ScanDetailSheet> createState() => _ScanDetailSheetState();
+  State<ScanDetailPage> createState() => _ScanDetailPageState();
 }
 
-class _ScanDetailSheetState extends State<ScanDetailSheet> {
+class _ScanDetailPageState extends State<ScanDetailPage> {
   late ScanRecord _record;
-  _Pane _pane = _Pane.details;
-  bool _refreshing = false;
-  bool _loadingHistory = false;
+  bool _busy = false;
+  bool _loadingHistory = true;
   List<DeliveryEvent> _events = [];
   String? _historyError;
 
@@ -37,29 +37,21 @@ class _ScanDetailSheetState extends State<ScanDetailSheet> {
     super.initState();
     _record = widget.record;
     _refresh();
+    _loadHistory();
   }
 
   Future<void> _refresh() async {
-    setState(() => _refreshing = true);
     try {
       final updated = await widget.api.refreshScan(_record.id);
       if (!mounted) return;
-      setState(() {
-        _refreshing = false;
-        _record = updated;
-      });
-      widget.onUpdated?.call(updated);
+      setState(() => _record = updated);
+      widget.onChanged?.call();
     } on DigiApiException {
-      if (!mounted) return;
-      setState(() => _refreshing = false);
+      return;
     }
   }
 
   Future<void> _loadHistory() async {
-    setState(() {
-      _loadingHistory = true;
-      _historyError = null;
-    });
     try {
       final events = await widget.api.history(_record.id);
       if (!mounted) return;
@@ -76,196 +68,403 @@ class _ScanDetailSheetState extends State<ScanDetailSheet> {
     }
   }
 
-  Future<void> _runAction(ScanAction action) async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => DeliveryFlowPage(
-          api: widget.api,
-          record: _record,
-          focusAction: action.id,
-        ),
-      ),
-    );
-    if (mounted) {
-      await _refresh();
+  Future<void> _onAction(ScanAction action) async {
+    switch (action.id) {
+      case 'registerTransfer':
+        await _transfer(action.label);
+      case 'outcomeFull':
+        if (await _confirm('Να δηλωθεί πλήρης παράδοση;')) {
+          await _submitOutcome(DeliveryOutcome.full);
+        }
+      case 'outcomeNone':
+        if (await _confirm('Να δηλωθεί ότι η παράδοση δεν έγινε;')) {
+          await _submitOutcome(DeliveryOutcome.none);
+        }
+      case 'outcomePartial':
+        await _partial();
+      case 'reject':
+        await _reject();
     }
+  }
+
+  Future<void> _transfer(String label) async {
+    final vehicle = _record.vehicleNumber?.trim() ?? '';
+    final transport = _record.transportType ?? TransportType.privateTruck;
+    if (vehicle.isEmpty && transport != TransportType.none) {
+      final typed = await _askPlate();
+      if (typed == null || !mounted) return;
+      await _submitTransfer(typed, transport);
+      return;
+    }
+    final plate = vehicle.isEmpty ? 'χωρίς πινακίδα' : vehicle;
+    if (await _confirm('Να δηλωθεί $label με όχημα $plate;')) {
+      await _submitTransfer(vehicle, transport);
+    }
+  }
+
+  Future<String?> _askPlate() {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Πινακίδα'),
+          content: SizedBox(
+            width: 280,
+            child: TextField(
+              controller: controller,
+              inputFormatters: const [PlateTextInputFormatter()],
+              decoration: const InputDecoration(labelText: 'Πινακίδα'),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Άκυρο'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(
+                normalizePlate(controller.text.trim()),
+              ),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    ).whenComplete(() {
+      Future<void>.delayed(const Duration(milliseconds: 400), controller.dispose);
+    });
+  }
+
+  Future<void> _partial() async {
+    final controller = TextEditingController();
+    final quantity = await showDialog<int>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Μερική παράδοση'),
+          content: SizedBox(
+            width: 280,
+            child: TextField(
+              controller: controller,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Πόσες συσκευασίες;'),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Άκυρο'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(int.tryParse(controller.text.trim())),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    ).whenComplete(() {
+      Future<void>.delayed(const Duration(milliseconds: 400), controller.dispose);
+    });
+    if (quantity == null || quantity <= 0 || !mounted) {
+      if (mounted && quantity != null) {
+        _showMessage('Συμπλήρωσε πλήθος συσκευασιών.');
+      }
+      return;
+    }
+    await _submitOutcome(DeliveryOutcome.partial, packagingQuantity: quantity);
+  }
+
+  Future<void> _reject() async {
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Απόρριψη παραλαβής'),
+          content: SizedBox(
+            width: 280,
+            child: TextField(
+              controller: controller,
+              decoration: const InputDecoration(labelText: 'Γιατί; (προαιρετικό)'),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Άκυρο'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    ).whenComplete(() {
+      Future<void>.delayed(const Duration(milliseconds: 400), controller.dispose);
+    });
+    if (reason == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final updated = await widget.api.rejectDelivery(id: _record.id, reason: reason);
+      _apply(updated, 'Η παραλαβή απορρίφθηκε.');
+    } on DigiApiException catch (error) {
+      _fail(error.message);
+    }
+  }
+
+  Future<void> _submitTransfer(String vehicle, TransportType transport) async {
+    setState(() => _busy = true);
+    try {
+      final updated = await widget.api.registerTransfer(
+        id: _record.id,
+        vehicleNumber: vehicle,
+        transportType: transport.code,
+        trailerNumber: _record.trailerNumber,
+      );
+      await SettingsStore().saveLastVehicle(
+        vehicleNumber: vehicle,
+        transportType: transport.code,
+        trailerNumber: _record.trailerNumber,
+      );
+      _apply(updated, 'Η διακίνηση καταχωρήθηκε.');
+    } on DigiApiException catch (error) {
+      _fail(error.message);
+    }
+  }
+
+  Future<void> _submitOutcome(
+    DeliveryOutcome outcome, {
+    int? packagingQuantity,
+  }) async {
+    setState(() => _busy = true);
+    try {
+      final updated = await widget.api.confirmOutcome(
+        id: _record.id,
+        outcome: outcome.apiValue,
+        packagingType: packagingQuantity == null ? null : 6,
+        packagingQuantity: packagingQuantity,
+      );
+      _apply(updated, outcome.label);
+    } on DigiApiException catch (error) {
+      _fail(error.message);
+    }
+  }
+
+  void _apply(ScanRecord updated, String message) {
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _record = updated;
+    });
+    widget.onChanged?.call();
+    _loadHistory();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _fail(String message) {
+    if (!mounted) return;
+    setState(() => _busy = false);
+    _showMessage(message);
+  }
+
+  Future<bool> _confirm(String message) {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Άκυρο'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    ).then((value) => value == true);
+  }
+
+  void _showMessage(String message) {
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          content: Text(message),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final record = _record;
-    return SafeArea(
-      child: SizedBox(
-        height: MediaQuery.sizeOf(context).height * 0.78,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-          child: Column(
-            children: [
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFD5DEE2),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                record.action.title,
-                style: const TextStyle(
-                  color: AppColors.navy,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                record.status.label,
-                style: const TextStyle(
-                  color: AppColors.teal,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 16),
-              SegmentedButton<_Pane>(
-                segments: const [
-                  ButtonSegment(value: _Pane.details, label: Text('Στοιχεία')),
-                  ButtonSegment(value: _Pane.qr, label: Text('QR Code')),
-                  ButtonSegment(value: _Pane.history, label: Text('Ιστορικό')),
-                ],
-                selected: {_pane},
-                onSelectionChanged: (selection) {
-                  setState(() => _pane = selection.first);
-                  if (selection.first == _Pane.history &&
-                      _events.isEmpty &&
-                      !_loadingHistory) {
-                    _loadHistory();
-                  }
-                },
-              ),
-              const SizedBox(height: 16),
-              Expanded(child: _paneBody(record)),
-              if (_refreshing)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 8),
-                  child: SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              for (final action in record.actions) ...[
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    onPressed: () => _runAction(action),
-                    child: Text(action.label),
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
+    final actions = record.actions;
+    return Scaffold(
+      backgroundColor: AppColors.cream,
+      appBar: AppBar(
+        title: Text(record.status.label),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+        children: [
+          Text(
+            record.invoiceMark == null || record.invoiceMark!.isEmpty
+                ? 'Στοιχεία δελτίου'
+                : 'ΜΑΡΚ ${record.invoiceMark}',
+            style: const TextStyle(
+              color: AppColors.navy,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 16),
+          _DetailRow(label: 'Κατάσταση', value: record.status.label),
+          _DetailRow(label: 'Σάρωση', value: record.scannedAtLabel),
+          if (record.dispatchTimestamp != null && record.dispatchTimestamp!.isNotEmpty)
+            _DetailRow(label: 'Έναρξη', value: record.dispatchTimestamp!),
+          if (record.vehicleNumber != null && record.vehicleNumber!.isNotEmpty)
+            _DetailRow(label: 'Όχημα', value: record.vehicleNumber!),
+          if (record.transportType != null)
+            _DetailRow(label: 'Μέσο', value: record.transportType!.label),
+          if (record.trailerNumber != null && record.trailerNumber!.isNotEmpty)
+            _DetailRow(label: 'Ρυμουλκούμενο', value: record.trailerNumber!),
+          if (record.lastAction != null && record.lastAction!.isNotEmpty)
+            _DetailRow(label: 'Τελευταία ενέργεια', value: record.lastAction!),
+          if (record.lastMessage != null && record.lastMessage!.isNotEmpty)
+            _DetailRow(label: 'Μήνυμα', value: record.lastMessage!),
+          const SizedBox(height: 8),
+          const Text(
+            'Τι θέλεις να κάνεις;',
+            style: TextStyle(
+              color: AppColors.navy,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (_busy)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (actions.isEmpty)
+            const Text(
+              'Δεν υπάρχει κάτι να δηλώσεις τώρα.',
+              style: TextStyle(color: AppColors.muted, fontSize: 16),
+            )
+          else
+            for (var index = 0; index < actions.length; index++) ...[
               SizedBox(
                 width: double.infinity,
-                child: OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFFB3261E),
-                    side: const BorderSide(color: Color(0xFFB3261E), width: 1.4),
-                  ),
-                  onPressed: widget.onDelete,
-                  child: const Text('Διαγραφή'),
+                child: index == 0
+                    ? FilledButton(
+                        onPressed: () => _onAction(actions[index]),
+                        child: Text(actions[index].label),
+                      )
+                    : OutlinedButton(
+                        onPressed: () => _onAction(actions[index]),
+                        child: Text(actions[index].label),
+                      ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          const SizedBox(height: 20),
+          const Text(
+            'QR για άλλον',
+            style: TextStyle(
+              color: AppColors.navy,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Δείξε αυτή την εικόνα για να τη σκανάρει άλλο κινητό.',
+            style: TextStyle(color: AppColors.muted, fontSize: 14),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: QrImageView(
+                  data: record.qrUrl,
+                  size: 180,
+                  backgroundColor: Colors.white,
                 ),
               ),
-            ],
+            ),
           ),
-        ),
+          const SizedBox(height: 24),
+          const Text(
+            'Ιστορικό',
+            style: TextStyle(
+              color: AppColors.navy,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _historyBody(),
+        ],
       ),
     );
   }
 
-  Widget _paneBody(ScanRecord record) {
-    return switch (_pane) {
-      _Pane.details => ListView(
-          children: [
-            _DetailRow(label: 'Σάρωση', value: record.scannedAtLabel),
-            if (record.invoiceMark != null && record.invoiceMark!.isNotEmpty)
-              _DetailRow(label: 'ΜΑΡΚ', value: record.invoiceMark!),
-            if (record.dispatchTimestamp != null &&
-                record.dispatchTimestamp!.isNotEmpty)
-              _DetailRow(
-                label: 'Έναρξη διακίνησης',
-                value: record.dispatchTimestamp!,
-              ),
-            if (record.vehicleNumber != null && record.vehicleNumber!.isNotEmpty)
-              _DetailRow(label: 'Όχημα', value: record.vehicleNumber!),
-            if (record.transportType != null)
-              _DetailRow(label: 'Είδος μέσου', value: record.transportType!.label),
-            if (record.lastAction != null && record.lastAction!.isNotEmpty)
-              _DetailRow(label: 'Τελευταία ενέργεια', value: record.lastAction!),
-            if (record.lastMessage != null && record.lastMessage!.isNotEmpty)
-              _DetailRow(label: 'Μήνυμα', value: record.lastMessage!),
-          ],
-        ),
-      _Pane.qr => Center(
-          child: QrImageView(
-            data: record.qrUrl,
-            size: 220,
-            backgroundColor: Colors.white,
-          ),
-        ),
-      _Pane.history => _historyBody(),
-    };
-  }
-
   Widget _historyBody() {
     if (_loadingHistory) {
-      return const Center(child: CircularProgressIndicator());
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12),
+        child: Center(child: CircularProgressIndicator()),
+      );
     }
     if (_historyError != null) {
       return Text(_historyError!, style: const TextStyle(color: AppColors.muted));
     }
     if (_events.isEmpty) {
       return const Text(
-        'Δεν υπάρχει ιστορικό διακίνησης από την ΑΑΔΕ.',
-        style: TextStyle(color: AppColors.muted),
+        'Δεν υπάρχει ιστορικό από την ΑΑΔΕ.',
+        style: TextStyle(color: AppColors.muted, fontSize: 15),
       );
     }
-    return ListView.separated(
-      itemCount: _events.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 10),
-      itemBuilder: (context, index) {
-        final event = _events[index];
-        final details = [
-          if (event.eventTimestamp != null && event.eventTimestamp!.isNotEmpty)
-            event.eventTimestamp!,
-          if (event.vehicleNumber != null && event.vehicleNumber!.isNotEmpty)
-            'Όχημα ${event.vehicleNumber}',
-          if (event.actorVat != null && event.actorVat!.isNotEmpty)
-            'ΑΦΜ ${event.actorVat}',
-          if (event.outcome != null && event.outcome!.isNotEmpty)
-            event.outcome!,
-          if (event.reason != null && event.reason!.isNotEmpty) event.reason!,
-        ].join(' · ');
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              event.eventTypeLabel,
-              style: const TextStyle(
-                color: AppColors.navy,
-                fontWeight: FontWeight.w700,
-              ),
+    return Column(
+      children: [
+        for (final event in _events)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _DetailRow(
+              label: event.eventTypeLabel,
+              value: [
+                if (event.eventTimestamp != null && event.eventTimestamp!.isNotEmpty)
+                  event.eventTimestamp!,
+                if (event.vehicleNumber != null && event.vehicleNumber!.isNotEmpty)
+                  event.vehicleNumber!,
+                if (event.outcome != null && event.outcome!.isNotEmpty) event.outcome!,
+              ].join(' · '),
             ),
-            if (details.isNotEmpty)
-              Text(details, style: const TextStyle(color: AppColors.muted, fontSize: 13)),
-          ],
-        );
-      },
+          ),
+      ],
     );
   }
 }
-
-enum _Pane { details, qr, history }
 
 class _DetailRow extends StatelessWidget {
   const _DetailRow({required this.label, required this.value});
@@ -281,10 +480,10 @@ class _DetailRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 140,
+            width: 120,
             child: Text(
               label,
-              style: const TextStyle(color: AppColors.muted, fontSize: 13),
+              style: const TextStyle(color: AppColors.muted, fontSize: 15),
             ),
           ),
           Expanded(
@@ -292,8 +491,8 @@ class _DetailRow extends StatelessWidget {
               value,
               style: const TextStyle(
                 color: AppColors.navy,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ),
@@ -308,19 +507,17 @@ Future<bool> confirmLocalScanDelete(BuildContext context) async {
     context: context,
     builder: (dialogContext) {
       return AlertDialog(
-        title: const Text('Διαγραφή από τη λίστα'),
         content: const Text(
-          'Αυτό θα διαγραφεί από τη λίστα χωρίς να επηρεάσει κάτι στην ΑΑΔΕ. '
-          'Θέλετε να προχωρήσετε;',
+          'Να φύγει από τη λίστα; Δεν αλλάζει κάτι στην ΑΑΔΕ.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Ακύρωση'),
+            child: const Text('Άκυρο'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Διαγραφή'),
+            child: const Text('OK'),
           ),
         ],
       );
@@ -335,30 +532,13 @@ Future<void> showScanRecordSheet({
   required DigiApi api,
   VoidCallback? onChanged,
 }) {
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: AppColors.card,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-    ),
-    builder: (sheetContext) {
-      return ScanDetailSheet(
+  return Navigator.of(context).push<void>(
+    MaterialPageRoute(
+      builder: (_) => ScanDetailPage(
         record: record,
         api: api,
-        onUpdated: (_) => onChanged?.call(),
-        onDelete: () async {
-          final confirmed = await confirmLocalScanDelete(sheetContext);
-          if (!confirmed || !sheetContext.mounted) {
-            return;
-          }
-          await api.deleteScan(record.id);
-          if (sheetContext.mounted) {
-            Navigator.of(sheetContext).pop();
-          }
-          onChanged?.call();
-        },
-      );
-    },
+        onChanged: onChanged,
+      ),
+    ),
   );
 }

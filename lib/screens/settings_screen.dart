@@ -22,7 +22,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loading = true;
   bool _saving = false;
   bool _testing = false;
-  ApiEnvironment _environment = ApiEnvironment.development;
   String _token = '';
   String _companyName = '';
 
@@ -41,7 +40,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _firstNameController.text = settings.firstName;
     _lastNameController.text = settings.lastName;
     setState(() {
-      _environment = settings.apiEnvironment;
       _token = settings.token;
       _companyName = settings.companyName;
       _loading = false;
@@ -61,7 +59,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       previous.copyWith(
         firstName: firstName,
         lastName: lastName,
-        apiEnvironment: _environment,
       ),
     );
     if (!mounted) {
@@ -81,7 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _testing = true);
     try {
       final api = widget.api ??
-          DigiApi(baseUrl: _environment.baseUrl, token: _token);
+          DigiApi(baseUrl: digiApiBaseUrl, token: _token);
       final message = await api.testAade();
       if (!mounted) {
         return;
@@ -154,64 +151,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   controller: _lastNameController,
                   textInputAction: TextInputAction.done,
                   decoration: const InputDecoration(labelText: 'Επώνυμο'),
-                ),
-                const SizedBox(height: 20),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.card,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: const Color(0xFFD5DEE2)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Text(
-                            'Dev',
-                            style: TextStyle(
-                              color: _environment.isProduction
-                                  ? AppColors.muted
-                                  : AppColors.navy,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const Spacer(),
-                          Switch(
-                            value: _environment.isProduction,
-                            onChanged: (useProd) {
-                              setState(() {
-                                _environment = useProd
-                                    ? ApiEnvironment.production
-                                    : ApiEnvironment.development;
-                              });
-                            },
-                          ),
-                          const Spacer(),
-                          Text(
-                            'Prod',
-                            style: TextStyle(
-                              color: _environment.isProduction
-                                  ? AppColors.navy
-                                  : AppColors.muted,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ],
-                      ),
-                      Text(
-                        _environment.baseUrl,
-                        style: const TextStyle(
-                          color: AppColors.muted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
                 ),
                 const SizedBox(height: 28),
                 FilledButton(
