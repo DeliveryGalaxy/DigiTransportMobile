@@ -102,4 +102,22 @@ class SettingsStore {
     await prefs.setInt(lastTransportTypeKey, transportType);
     await prefs.setString(lastTrailerNumberKey, trailerNumber ?? '');
   }
+
+  Future<AppSettings> clearCompanyAndVehicle({
+    required String firstName,
+    required String lastName,
+  }) async {
+    final current = await load();
+    final next = AppSettings(
+      firstName: firstName,
+      lastName: lastName,
+      environment: current.environment,
+    );
+    await save(next);
+    final prefs = await _ensurePrefs();
+    await prefs.remove(lastVehicleNumberKey);
+    await prefs.remove(lastTransportTypeKey);
+    await prefs.remove(lastTrailerNumberKey);
+    return next;
+  }
 }

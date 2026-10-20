@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/delivery.dart';
@@ -8,6 +7,16 @@ import '../services/digi_api.dart';
 import '../services/plate_text.dart';
 import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
+import 'change_vehicle_dialog.dart';
+
+enum _PlateChoice { change, ok }
+
+class _PartialDelivery {
+  const _PartialDelivery({required this.quantity, required this.title});
+
+  final int? quantity;
+  final String title;
+}
 
 class ScanDetailPage extends StatefulWidget {
   const ScanDetailPage({
@@ -28,6 +37,7 @@ class ScanDetailPage extends StatefulWidget {
 class _ScanDetailPageState extends State<ScanDetailPage> {
   late ScanRecord _record;
   bool _busy = false;
+  bool _loadingStatus = true;
   bool _loadingHistory = true;
   List<DeliveryEvent> _events = [];
   String? _historyError;
@@ -44,10 +54,14 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
     try {
       final updated = await widget.api.refreshScan(_record.id);
       if (!mounted) return;
-      setState(() => _record = updated);
+      setState(() {
+        _record = updated;
+        _loadingStatus = false;
+      });
       widget.onChanged?.call();
     } on DigiApiException {
-      return;
+      if (!mounted) return;
+      setState(() => _loadingStatus = false);
     }
   }
 
@@ -88,12 +102,35 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
   }
 
   Future<void> _transfer(String label) async {
-    final vehicle = _record.vehicleNumber?.trim() ?? '';
+    final documentPlate = _record.vehicleNumber?.trim() ?? '';
     final transport = _record.transportType ?? TransportType.privateTruck;
-    if (vehicle.isEmpty && transport != TransportType.none) {
-      final typed = await _askPlate();
-      if (typed == null || !mounted) return;
-      await _submitTransfer(typed, transport);
+    final settings = await SettingsStore().load();
+    if (!mounted) return;
+    final appPlate = settings.shouldDisplayPlated
+        ? normalizePlate(settings.identityUserId.trim())
+        : '';
+    var vehicle = documentPlate;
+    if (appPlate.isNotEmpty &&
+        documentPlate.isNotEmpty &&
+        !_samePlate(appPlate, documentPlate)) {
+      final choice = await _askPlateChoice(
+        appPlate: appPlate,
+        documentPlate: documentPlate,
+      );
+      if (choice == null || !mounted) return;
+      if (choice == _PlateChoice.change) {
+        final next = await changeDeclaredVehicle(context, api: widget.api);
+        if (next == null || !mounted) return;
+        vehicle = normalizePlate(next.identityUserId.trim());
+      } else {
+        vehicle = appPlate;
+      }
+      await _submitTransfer(vehicle, transport);
+      return;
+    } else if (vehicle.isEmpty && appPlate.isNotEmpty) {
+      vehicle = appPlate;
+    } else if (vehicle.isEmpty && transport != TransportType.none) {
+      _showMessage('Δεν υπάρχει πινακίδα στο app.');
       return;
     }
     final plate = vehicle.isEmpty ? 'χωρίς πινακίδα' : vehicle;
@@ -102,19 +139,64 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
     }
   }
 
-  Future<String?> _askPlate() {
-    final controller = TextEditingController();
-    return showDialog<String>(
+  bool _samePlate(String left, String right) {
+    String key(String value) => normalizePlate(value).replaceAll(RegExp(r'\s+'), '');
+    return key(left) == key(right);
+  }
+
+  Future<_PlateChoice?> _askPlateChoice({
+    required String appPlate,
+    required String documentPlate,
+  }) {
+    return showDialog<_PlateChoice>(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('Πινακίδα'),
+          content: Text(
+            'Η πινακίδα στο δελτίο αποστολής είναι η $documentPlate ενώ εσείς έχετε το αυτοκίνητο $appPlate.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(_PlateChoice.change),
+              child: const Text('Αλλαγή'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(_PlateChoice.ok),
+              child: const Text('OK'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Ακύρωση'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _partial() async {
+    final quantityController = TextEditingController();
+    final titleController = TextEditingController();
+    final result = await showDialog<_PartialDelivery>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Μερική παράδοση'),
           content: SizedBox(
             width: 280,
-            child: TextField(
-              controller: controller,
-              inputFormatters: const [PlateTextInputFormatter()],
-              decoration: const InputDecoration(labelText: 'Πινακίδα'),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: quantityController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Πόσες συσκευασίες;'),
+                ),
+                TextField(
+                  controller: titleController,
+                  decoration: const InputDecoration(labelText: 'Τίτλος συσκευασίας'),
+                ),
+              ],
             ),
           ),
           actions: [
@@ -124,7 +206,10 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
             ),
             FilledButton(
               onPressed: () => Navigator.of(context).pop(
-                normalizePlate(controller.text.trim()),
+                _PartialDelivery(
+                  quantity: int.tryParse(quantityController.text.trim()),
+                  title: titleController.text.trim(),
+                ),
               ),
               child: const Text('OK'),
             ),
@@ -132,47 +217,25 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
         );
       },
     ).whenComplete(() {
-      Future<void>.delayed(const Duration(milliseconds: 400), controller.dispose);
+      Future<void>.delayed(const Duration(milliseconds: 400), () {
+        quantityController.dispose();
+        titleController.dispose();
+      });
     });
-  }
-
-  Future<void> _partial() async {
-    final controller = TextEditingController();
-    final quantity = await showDialog<int>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Μερική παράδοση'),
-          content: SizedBox(
-            width: 280,
-            child: TextField(
-              controller: controller,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Πόσες συσκευασίες;'),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Άκυρο'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(int.tryParse(controller.text.trim())),
-              child: const Text('OK'),
-            ),
-          ],
-        );
-      },
-    ).whenComplete(() {
-      Future<void>.delayed(const Duration(milliseconds: 400), controller.dispose);
-    });
-    if (quantity == null || quantity <= 0 || !mounted) {
-      if (mounted && quantity != null) {
-        _showMessage('Συμπλήρωσε πλήθος συσκευασιών.');
-      }
+    if (result == null || !mounted) return;
+    if (result.quantity == null || result.quantity! <= 0) {
+      _showMessage('Συμπλήρωσε πλήθος συσκευασιών.');
       return;
     }
-    await _submitOutcome(DeliveryOutcome.partial, packagingQuantity: quantity);
+    if (result.title.isEmpty) {
+      _showMessage('Συμπλήρωσε τίτλο συσκευασίας.');
+      return;
+    }
+    await _submitOutcome(
+      DeliveryOutcome.partial,
+      packagingQuantity: result.quantity,
+      otherPackagingTypeTitle: result.title,
+    );
   }
 
   Future<void> _reject() async {
@@ -237,6 +300,7 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
   Future<void> _submitOutcome(
     DeliveryOutcome outcome, {
     int? packagingQuantity,
+    String? otherPackagingTypeTitle,
   }) async {
     setState(() => _busy = true);
     try {
@@ -245,6 +309,7 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
         outcome: outcome.apiValue,
         packagingType: packagingQuantity == null ? null : 6,
         packagingQuantity: packagingQuantity,
+        otherPackagingTypeTitle: otherPackagingTypeTitle,
       );
       _apply(updated, outcome.label);
     } on DigiApiException catch (error) {
@@ -252,17 +317,15 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
     }
   }
 
-  void _apply(ScanRecord updated, String message) {
+  void _apply(ScanRecord _, String message) {
     if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _record = updated;
-    });
     widget.onChanged?.call();
-    _loadHistory();
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    }
   }
 
   void _fail(String message) {
@@ -318,7 +381,9 @@ class _ScanDetailPageState extends State<ScanDetailPage> {
       appBar: AppBar(
         title: Text(record.status.label),
       ),
-      body: ListView(
+      body: _loadingStatus
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
         children: [
           Text(

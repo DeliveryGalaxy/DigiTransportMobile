@@ -13,11 +13,13 @@ class OnboardingScreen extends StatefulWidget {
     required this.settings,
     required this.onReady,
     this.store,
+    this.api,
   });
 
   final AppSettings settings;
   final ValueChanged<AppSettings> onReady;
   final SettingsStore? store;
+  final DigiApi? api;
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -75,7 +77,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
     setState(() => _busy = true);
     try {
-      final api = DigiApi(baseUrl: digiApiBaseUrl);
+      final api = widget.api ?? DigiApi(baseUrl: digiApiBaseUrl);
       final company = await api.lookupCompany(afm);
       if (!mounted) {
         return;
@@ -118,6 +120,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (!mounted) {
       return;
     }
+    _firstNameController.text = next.firstName;
+    _lastNameController.text = next.lastName;
     setState(() {
       _settings = next;
       _pending = null;
@@ -156,7 +160,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
     setState(() => _busy = true);
     try {
-      final api = DigiApi(baseUrl: digiApiBaseUrl);
+      final api = widget.api ?? DigiApi(baseUrl: digiApiBaseUrl);
       final result = await api.verifyIdentity(
         companyId: _settings.companyId,
         userId: identity,

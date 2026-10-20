@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../models/app_settings.dart';
 import '../theme/app_theme.dart';
 import 'home_screen.dart';
 import 'qr_action_modal.dart';
 import 'settings_screen.dart';
 
 class MainShell extends StatefulWidget {
-  const MainShell({super.key});
+  const MainShell({super.key, required this.onChangeCompany});
+
+  final ValueChanged<AppSettings> onChangeCompany;
 
   @override
   State<MainShell> createState() => _MainShellState();
@@ -44,7 +47,7 @@ class _MainShellState extends State<MainShell> {
         index: _index,
         children: [
           HomeScreen(revision: _homeRevision),
-          const SettingsScreen(),
+          SettingsScreen(onChangeCompany: widget.onChangeCompany),
         ],
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,

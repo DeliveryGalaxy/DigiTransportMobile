@@ -7,12 +7,20 @@ class FakeDigiApi extends DigiApi {
     List<ScanRecord>? scans,
     this.openResult,
     this.refreshed,
+    this.company,
   }) : scans = [...?scans],
        super(baseUrl: 'http://test.local', token: 'token', companyAfm: '123456789');
 
   List<ScanRecord> scans;
   OpenScanResult? openResult;
   ScanRecord? refreshed;
+  CompanyDetails? company;
+  String? lastTransferVehicle;
+
+  @override
+  Future<CompanyDetails> lookupCompany(String afm) async {
+    return company!;
+  }
 
   @override
   Future<List<ScanRecord>> listScans() async => scans;
@@ -37,4 +45,15 @@ class FakeDigiApi extends DigiApi {
 
   @override
   Future<List<DeliveryEvent>> history(String id) async => const [];
+
+  @override
+  Future<ScanRecord> registerTransfer({
+    required String id,
+    required String vehicleNumber,
+    required int transportType,
+    String? trailerNumber,
+  }) async {
+    lastTransferVehicle = vehicleNumber;
+    return refreshed ?? scans.firstWhere((scan) => scan.id == id);
+  }
 }

@@ -3,8 +3,11 @@ import 'package:digi_transport/models/app_settings.dart';
 import 'package:digi_transport/models/delivery.dart';
 import 'package:digi_transport/models/scan_record.dart';
 import 'package:digi_transport/screens/home_screen.dart';
+import 'package:digi_transport/screens/onboarding_screen.dart';
 import 'package:digi_transport/screens/qr_action_modal.dart';
+import 'package:digi_transport/screens/scan_detail_sheet.dart';
 import 'package:digi_transport/services/digi_api.dart';
+import 'package:digi_transport/services/scan_history_store.dart';
 import 'fake_digi_api.dart';
 import 'package:digi_transport/services/settings_store.dart';
 import 'package:flutter/material.dart';
@@ -99,6 +102,90 @@ void main() {
 
     expect(find.text('Αλλαγή οχήματος'), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('change company restarts onboarding and keeps the name', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      SettingsStore.companyIdKey: 1,
+      SettingsStore.companyConfirmedKey: true,
+      SettingsStore.companyNameKey: 'ACME',
+      SettingsStore.companyAfmKey: '111111111',
+      SettingsStore.afmKey: '111111111',
+      SettingsStore.usernameKey: 'acme-user',
+      SettingsStore.tokenKey: 'token',
+      SettingsStore.firstNameKey: 'Nikos',
+      SettingsStore.lastNameKey: 'Papas',
+      SettingsStore.identityUserIdKey: 'ABC1234',
+      SettingsStore.pinKey: '1234',
+      SettingsStore.lastVehicleNumberKey: 'IKE1234',
+      SettingsStore.lastTransportTypeKey: 1,
+      SettingsStore.lastTrailerNumberKey: 'TRL1',
+      ScanHistoryStore.historyKey: '[{"id":"1"}]',
+    });
+    await tester.pumpWidget(const DigiTransportApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.settings_rounded));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Αλλαγή εταιρείας'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Αλλαγή'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ΑΦΜ εταιρείας'), findsOneWidget);
+
+    final store = SettingsStore();
+    final settings = await store.load();
+    expect(settings.firstName, 'Nikos');
+    expect(settings.lastName, 'Papas');
+    expect(settings.companyConfirmed, isFalse);
+    expect(settings.companyId, 0);
+    expect(settings.companyName, isEmpty);
+    expect(settings.token, isEmpty);
+    expect(settings.identityUserId, isEmpty);
+    expect(await store.loadLastVehicleNumber(), isEmpty);
+    expect(await store.loadLastTrailerNumber(), isEmpty);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString(ScanHistoryStore.historyKey), isNull);
+  });
+
+  testWidgets('name step keeps the saved first and last name', (tester) async {
+    final api = FakeDigiApi(
+      company: const CompanyDetails(
+        id: 9,
+        name: 'Νέα Εταιρεία',
+        username: 'new-user',
+        afm: '999999999',
+        subscriptionKey: 'key',
+        isMetaforiki: false,
+        isContainer: false,
+        isOther: true,
+        shouldDisplayPlated: false,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: OnboardingScreen(
+          settings: const AppSettings(firstName: 'Nikos', lastName: 'Papas'),
+          onReady: (_) {},
+          api: api,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), '999999999');
+    await tester.tap(find.text('Συνέχεια'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Τα στοιχεία σου'), findsOneWidget);
+    expect(find.text('Nikos'), findsOneWidget);
+    expect(find.text('Papas'), findsOneWidget);
   });
 
   testWidgets('afm step asks for a value', (tester) async {
@@ -225,6 +312,49 @@ void main() {
     expect(find.text('Αριθμός κυκλοφορίας'), findsNothing);
   });
 
+  testWidgets('mismatched plate sends the app plate unless change is pressed', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      SettingsStore.isMetaforikiKey: true,
+      SettingsStore.identityUserIdKey: 'IKE1234',
+    });
+    final scan = sampleScan(
+      id: '1',
+      action: QrFlowAction.startRoute,
+      status: DeliveryStatus.registered,
+      vehicleNumber: 'KIA8876',
+      vehicleFromDocument: true,
+      actions: const [
+        ScanAction(id: 'registerTransfer', label: 'Έναρξη διακίνησης'),
+      ],
+    );
+    final api = FakeDigiApi(scans: [scan], refreshed: scan);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ScanDetailPage(record: scan, api: api),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tap(find.text('Έναρξη διακίνησης'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining(
+        'Η πινακίδα στο δελτίο αποστολής είναι η KIA8876 ενώ εσείς έχετε το αυτοκίνητο IKE1234.',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+
+    expect(api.lastTransferVehicle, 'IKE1234');
+  });
+
   testWidgets('home lists scans newest first and deletes only from the list', (
     tester,
   ) async {
@@ -253,6 +383,14 @@ void main() {
 
     expect(find.text('Σε διακίνηση'), findsOneWidget);
     expect(find.text('Εκδόθηκε'), findsOneWidget);
+    final cardWidth = tester.getSize(
+      find.ancestor(
+        of: find.text('Σε διακίνηση'),
+        matching: find.byType(Material),
+      ).first,
+    ).width;
+    final listWidth = tester.getSize(find.byType(ListView)).width;
+    expect(cardWidth, listWidth);
     expect(
       tester.getTopLeft(find.text('Σε διακίνηση')).dy <
           tester.getTopLeft(find.text('Εκδόθηκε')).dy,

@@ -245,6 +245,7 @@ class AadeClient {
     bool? deliveredWithoutRecipient,
     int? packagingType,
     int? packagingQuantity,
+    String? otherPackagingTypeTitle,
   }) async {
     final xml = buildConfirmDeliveryOutcomeXml(
       qrUrl: qrUrl,
@@ -252,6 +253,7 @@ class AadeClient {
       deliveredWithoutRecipient: deliveredWithoutRecipient,
       packagingType: packagingType,
       packagingQuantity: packagingQuantity,
+      otherPackagingTypeTitle: otherPackagingTypeTitle,
     );
     return _postXml(
       confirmDeliveryOutcomeUri(),

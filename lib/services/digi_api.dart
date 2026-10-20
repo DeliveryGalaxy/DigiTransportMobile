@@ -165,11 +165,13 @@ class DigiApi {
     required String outcome,
     int? packagingType,
     int? packagingQuantity,
+    String? otherPackagingTypeTitle,
   }) async {
     final body = await _send('POST', '/scans/$id/outcome', body: {
       'outcome': outcome,
       'packagingType': packagingType,
       'packagingQuantity': packagingQuantity,
+      'otherPackagingTypeTitle': otherPackagingTypeTitle,
     });
     return _scanFromSubmit(body);
   }

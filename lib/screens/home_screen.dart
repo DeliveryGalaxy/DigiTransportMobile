@@ -1,93 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../models/app_settings.dart';
 import '../models/scan_record.dart';
 import '../services/digi_api.dart';
-import '../services/plate_text.dart';
 import '../services/settings_store.dart';
 import '../theme/app_theme.dart';
+import 'change_vehicle_dialog.dart';
 import 'scan_detail_sheet.dart';
-
-class _VehicleChange {
-  const _VehicleChange({required this.identity, required this.pin});
-
-  final String identity;
-  final String pin;
-}
-
-class _ChangeVehicleDialog extends StatefulWidget {
-  const _ChangeVehicleDialog();
-
-  @override
-  State<_ChangeVehicleDialog> createState() => _ChangeVehicleDialogState();
-}
-
-class _ChangeVehicleDialogState extends State<_ChangeVehicleDialog> {
-  final _identityController = TextEditingController();
-  final _pinController = TextEditingController();
-  var _obscurePin = true;
-
-  @override
-  void dispose() {
-    _identityController.dispose();
-    _pinController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      scrollable: true,
-      title: const Text('Αλλαγή οχήματος'),
-      content: SizedBox(
-        width: 280,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _identityController,
-              inputFormatters: const [PlateTextInputFormatter()],
-              decoration: const InputDecoration(labelText: 'Πινακίδα'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _pinController,
-              obscureText: _obscurePin,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: 'PIN',
-                suffixIcon: IconButton(
-                  onPressed: () => setState(() => _obscurePin = !_obscurePin),
-                  icon: Icon(
-                    _obscurePin ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Άκυρο'),
-        ),
-        FilledButton(
-          onPressed: () {
-            Navigator.of(context).pop(
-              _VehicleChange(
-                identity: normalizePlate(_identityController.text.trim()),
-                pin: _pinController.text.trim(),
-              ),
-            );
-          },
-          child: const Text('Έλεγχος'),
-        ),
-      ],
-    );
-  }
-}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -192,16 +111,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 letterSpacing: -0.6,
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 16),
+            if (_profile.shouldDisplayPlated) ...[
+              _vehicleCard(),
+              const SizedBox(height: 20),
+            ],
             const Text(
               'Ιστορικό σαρώσεων',
               style: TextStyle(color: AppColors.muted, fontSize: 14),
             ),
-            const SizedBox(height: 16),
-            if (_profile.shouldDisplayPlated) ...[
-              _vehicleCard(),
-              const SizedBox(height: 16),
-            ],
+            const SizedBox(height: 12),
             Expanded(child: _buildList()),
           ],
         ),
@@ -251,42 +170,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _changeVehicle() async {
-    final change = await showDialog<_VehicleChange>(
-      context: context,
-      builder: (context) => const _ChangeVehicleDialog(),
-    );
-    if (change == null || !mounted) {
+    final next = await changeDeclaredVehicle(context, api: widget.api);
+    if (next == null || !mounted) {
       return;
     }
-    final identity = change.identity;
-    final pin = change.pin;
-    if (identity.isEmpty || pin.isEmpty) {
-      _showMessage('Συμπλήρωσε πινακίδα και PIN.');
-      return;
-    }
-    try {
-      final api = widget.api ?? await DigiApi.fromStore();
-      final result = await api.verifyIdentity(
-        companyId: _profile.companyId,
-        userId: identity,
-        pin: pin,
-      );
-      final next = _profile.copyWith(
-        token: result.token,
-        identityUserId: result.userId,
-        pin: pin,
-      );
-      await SettingsStore().save(next);
-      if (!mounted) {
-        return;
-      }
-      setState(() => _profile = next);
-    } on DigiApiException catch (error) {
-      if (!mounted) {
-        return;
-      }
-      _showMessage(error.message);
-    }
+    setState(() => _profile = next);
   }
 
   void _showMessage(String message) {
@@ -319,101 +207,121 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildList() {
-    if (_loading) {
+    if (_loading && _records.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
     if (_needsLogin) {
-      return const Padding(
-        padding: EdgeInsets.only(top: 24),
-        child: Text(
-          'Συνδέσου από τις Ρυθμίσεις.',
-          style: TextStyle(color: AppColors.muted, fontSize: 15),
-        ),
-      );
+      return _refreshableMessage('Συνδέσου από τις Ρυθμίσεις.');
     }
-    if (_error != null) {
-      return Padding(
-        padding: const EdgeInsets.only(top: 24),
-        child: Text(
-          _error!,
-          style: const TextStyle(color: AppColors.muted, fontSize: 15),
-        ),
-      );
+    if (_error != null && _records.isEmpty) {
+      return _refreshableMessage(_error!);
     }
     if (_records.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.only(top: 24),
-        child: Text(
-          'Δεν υπάρχουν σαρώσεις ακόμα.',
-          style: TextStyle(color: AppColors.muted, fontSize: 15),
-        ),
-      );
+      return _refreshableMessage('Δεν υπάρχουν σαρώσεις ακόμα.');
     }
 
-    return ListView.separated(
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 108),
       itemCount: _records.length,
       separatorBuilder: (_, _) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
         final record = _records[index];
-        return Dismissible(
-          key: ValueKey(record.id),
-          direction: DismissDirection.horizontal,
-          confirmDismiss: (_) => confirmLocalScanDelete(context),
-          onDismissed: (_) async {
-            final api = widget.api ?? await DigiApi.fromStore();
-            await api.deleteScan(record.id);
-            if (!mounted) return;
-            setState(() {
-              _records = _records.where((item) => item.id != record.id).toList();
-            });
-          },
-          background: _swipeBackground(Alignment.centerLeft),
-          secondaryBackground: _swipeBackground(Alignment.centerRight),
-          child: Material(
-            color: AppColors.card,
-            borderRadius: BorderRadius.circular(18),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () => _openRecord(record),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      record.status.label,
-                      style: const TextStyle(
-                        color: AppColors.navy,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            return Dismissible(
+              key: ValueKey(record.id),
+              direction: DismissDirection.horizontal,
+              confirmDismiss: (_) => confirmLocalScanDelete(context),
+              onDismissed: (_) async {
+                final api = widget.api ?? await DigiApi.fromStore();
+                await api.deleteScan(record.id);
+                if (!mounted) return;
+                setState(() {
+                  _records = _records.where((item) => item.id != record.id).toList();
+                });
+              },
+              background: _swipeBackground(Alignment.centerLeft),
+              secondaryBackground: _swipeBackground(Alignment.centerRight),
+              child: SizedBox(
+                width: constraints.maxWidth,
+                child: Material(
+                  color: AppColors.card,
+                  borderRadius: BorderRadius.circular(18),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: () => _openRecord(record),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            record.status.label,
+                            style: const TextStyle(
+                              color: AppColors.navy,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          if (record.vehicleNumber != null && record.vehicleNumber!.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              record.vehicleNumber!,
+                              style: const TextStyle(
+                                color: AppColors.teal,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                          if (record.invoiceMark != null && record.invoiceMark!.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'ΜΑΡΚ ${record.invoiceMark}',
+                              style: const TextStyle(
+                                color: AppColors.navy,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 2),
+                          Text(
+                            record.scannedAtLabel,
+                            style: const TextStyle(color: AppColors.muted, fontSize: 13),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      record.vehicleNumber != null && record.vehicleNumber!.isNotEmpty
-                          ? record.vehicleNumber!
-                          : (record.invoiceMark != null && record.invoiceMark!.isNotEmpty
-                              ? 'ΜΑΡΚ ${record.invoiceMark}'
-                              : record.scannedAtLabel),
-                      style: const TextStyle(
-                        color: AppColors.teal,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      record.scannedAtLabel,
-                      style: const TextStyle(color: AppColors.muted, fontSize: 13),
-                    ),
-                  ],
+                  ),
                 ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
+      ),
+    );
+  }
+
+  Widget _refreshableMessage(String message) {
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 24),
+            child: Text(
+              message,
+              style: const TextStyle(color: AppColors.muted, fontSize: 15),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

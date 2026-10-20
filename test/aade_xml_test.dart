@@ -36,6 +36,19 @@ void main() {
     expect(xml, contains('<outcome>FULL</outcome>'));
   });
 
+  test('partial outcome sends packaging title with type 6', () {
+    final xml = buildConfirmDeliveryOutcomeXml(
+      qrUrl: 'https://example.com/fd/abc:6',
+      outcome: 'PARTIAL',
+      packagingType: 6,
+      packagingQuantity: 2,
+      otherPackagingTypeTitle: 'Κιβώτιο',
+    );
+    expect(xml, contains('<packagingType>6</packagingType>'));
+    expect(xml, contains('<otherPackagingTypeTitle>Κιβώτιο</otherPackagingTypeTitle>'));
+    expect(xml, contains('<quantity>2</quantity>'));
+  });
+
   test('parses namespaced invoiceHeader vehicleNumber for a MARK', () {
     const xml = '''
 <RequestedDoc xmlns:inv="http://www.aade.gr/myDATA/invoice/v1.0">

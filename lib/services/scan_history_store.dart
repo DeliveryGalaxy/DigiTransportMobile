@@ -62,6 +62,11 @@ class ScanHistoryStore {
     await _save(records);
   }
 
+  Future<void> clear() async {
+    final stored = await _ensurePrefs();
+    await stored.remove(historyKey);
+  }
+
   Future<ScanRecord?> findByMark(String? mark) async {
     final trimmed = mark?.trim() ?? '';
     if (trimmed.isEmpty) {

@@ -66,7 +66,9 @@ class _AppStartState extends State<AppStart> {
       );
     }
     if (settings.isReady) {
-      return const MainShell();
+      return MainShell(
+        onChangeCompany: (next) => setState(() => _settings = next),
+      );
     }
     return OnboardingScreen(
       settings: settings,

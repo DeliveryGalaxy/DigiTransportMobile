@@ -138,6 +138,7 @@ String buildConfirmDeliveryOutcomeXml({
   bool? deliveredWithoutRecipient,
   int? packagingType,
   int? packagingQuantity,
+  String? otherPackagingTypeTitle,
 }) {
   final extra = StringBuffer();
   if (deliveredWithoutRecipient != null) {
@@ -148,6 +149,12 @@ String buildConfirmDeliveryOutcomeXml({
   if (packagingType != null && packagingQuantity != null) {
     extra.writeln('    <deliveredPackaging>');
     extra.writeln('        <packagingType>$packagingType</packagingType>');
+    final title = otherPackagingTypeTitle?.trim();
+    if (title != null && title.isNotEmpty) {
+      extra.writeln(
+        '        <otherPackagingTypeTitle>${xmlEscape(title)}</otherPackagingTypeTitle>',
+      );
+    }
     extra.writeln('        <quantity>$packagingQuantity</quantity>');
     extra.writeln('    </deliveredPackaging>');
   }
